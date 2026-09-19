@@ -1,10 +1,12 @@
+import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, NavLink, Navigate } from 'react-router-dom';
-import { Home, Settings, Mic, ImageIcon, User } from 'lucide-react';
+import { Home, Settings, Mic, ImageIcon, User, Moon, Sun } from 'lucide-react';
 import HomePage from './pages/HomePage';
 import OnboardPage from './pages/OnboardPage';
 import ChatPage from './pages/ChatPage';
 import MemoriesAdminPage from './pages/MemoriesAdminPage';
 import MemoryTheaterPage from './pages/MemoryTheaterPage';
+import StoryTimePage from './pages/StoryTimePage';
 import PatientPage from './pages/PatientPage';
 import BystanderPage from './pages/BystanderPage';
 
@@ -47,7 +49,7 @@ function Dock() {
   );
 }
 
-function WordmarkBar() {
+function WordmarkBar({ theme, toggleTheme }: { theme: 'light' | 'dark', toggleTheme: () => void }) {
   return (
     <header className="wordmark-bar">
       {/* Logo + wordmark */}
@@ -75,15 +77,48 @@ function WordmarkBar() {
         </span>
       </div>
 
-      {/* Hackathon badge */}
-      <span className="badge badge-accent hide-mobile" style={{ fontSize: 10 }}>
-        AWS Hackathon 2026
-      </span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        {/* Theme toggle */}
+        <button 
+          onClick={toggleTheme}
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            color: 'var(--c-text-2)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            padding: 6, borderRadius: '50%',
+            transition: 'color 0.2s, background 0.2s',
+          }}
+          onMouseEnter={e => e.currentTarget.style.background = 'var(--c-surface-3)'}
+          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          aria-label={theme === 'dark' ? "Switch to light mode" : "Switch to dark mode"}
+        >
+          {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+        </button>
+
+        {/* Hackathon badge */}
+        <span className="badge badge-accent hide-mobile" style={{ fontSize: 10 }}>
+          AWS Hackathon 2026
+        </span>
+      </div>
     </header>
   );
 }
 
 export default function App() {
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    return (localStorage.getItem('sahay_theme') as 'light' | 'dark') || 'light';
+  });
+
+  useEffect(() => {
+    if (theme === 'dark') {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+    localStorage.setItem('sahay_theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => setTheme(prev => prev === 'light' ? 'dark' : 'light');
+
   return (
     <BrowserRouter>
       <Routes>
@@ -91,11 +126,12 @@ export default function App() {
         <Route path="/patient" element={<PatientPage />} />
         <Route path="/bystander/:patientId" element={<BystanderPage />} />
         <Route path="/memories/theater" element={<MemoryTheaterPage />} />
+        <Route path="/storytime" element={<StoryTimePage />} />
 
         {/* Main app with chrome */}
         <Route path="*" element={
           <>
-            <WordmarkBar />
+            <WordmarkBar theme={theme} toggleTheme={toggleTheme} />
             <Dock />
             <main style={{ paddingTop: 54, paddingBottom: 108, position: 'relative', zIndex: 1 }}>
               <Routes>
@@ -112,3 +148,4 @@ export default function App() {
     </BrowserRouter>
   );
 }
+

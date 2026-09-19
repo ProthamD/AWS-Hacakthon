@@ -12,6 +12,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { API_BASE } from '../App';
 
 /* ── Config ─────────────────────────────────────────── */
@@ -21,18 +22,75 @@ const BUFFER_SECS = 20;
 const SILENCE_RMS = 4;            // lower = more sensitive
 const MAX_RETRIES = 2;
 
-// Phrases that definitely mean the patient is talking TO Sahay
+/**
+ * WAKE PHRASES — triggers Sahay to respond.
+ * Covers: name-wake, distress/fear, disorientation, memory lapses, calls for help.
+ * Does NOT trigger on general background speech (TV, other people talking).
+ */
 const WAKE_PHRASES = [
-  'sahay', 'sehaj', 'sahaj',      // Deepgram mishears of "sahay"
-  'what is my name', 'who am i', 'i am lost', "i'm lost",
-  'where am i', 'help', 'scared', 'afraid',
-  'show me', 'route', 'where should i go',
-  'who are you', 'what are you',
+  // Direct address
+  'sahay', 'sehaj', 'sahaj', 'sahai', 'shaay',   // Deepgram phonetic mishears
+
+  // Memory lapse signals
+  'what is my name', 'who am i', "i don't know who i am",
+  "i can't remember", 'i forgot', "i don't remember",
+  "what's happening", 'what is happening', "i don't understand",
+  'where are we', 'what day is it', 'what year is it',
+  'where is my home', 'i want to go home', 'take me home',
+
+  // Disorientation / location
+  'i am lost', "i'm lost", 'where am i', 'i do not know where',
+  'show me the route', 'show me the way', 'where should i go',
+  'which way', 'which direction', 'i missed my stop',
+
+  // Fear / distress
+  'help me', 'i need help', 'help',
+  'scared', 'i am scared', "i'm scared", 'i am afraid', "i'm afraid",
+  'frightened', 'worried', 'anxious', 'panic', 'something is wrong',
+  "i don't feel safe", 'i feel lost', 'i feel confused',
+  'everything is confusing', 'nothing makes sense',
+
+  // Asking about surroundings/people
+  'who are you', 'what are you', 'do i know you',
+  'who is that', 'where is', 'where did everyone go',
+  'where is my family', 'where is my son', 'where is my daughter',
+  'where is my husband', 'where is my wife',
+
+  // Physical needs + emergencies
+  'i fell', 'i am falling', 'i cannot get up', 'call someone',
+  'call my son', 'call my daughter', 'call my family',
+  'i am not feeling well', 'i feel sick', 'something hurts',
 ];
 
-function isDirectedAtSahay(t: string) {
+/** Phrases that signal high emotional distress → auto-trigger caregiver alert */
+const HIGH_DISTRESS_PHRASES = [
+  'help', 'i fell', 'cannot get up', 'i am scared', "i'm scared",
+  'i feel sick', 'something hurts', 'call my', 'i am in pain',
+  'cannot breathe', 'chest hurts', 'i am dying',
+];
+
+function isDirectedAtSahay(t: string): boolean {
+  const lower = t.toLowerCase().trim();
+
+  // Always respond to direct name call
+  if (lower.startsWith('sahay') || lower.includes('hey sahay')) return true;
+
+  // Check wake phrases
+  if (WAKE_PHRASES.some(p => lower.includes(p))) return true;
+
+  // Also respond if utterance is short + questioning (confused patient)
+  // e.g. "Where am I?" "Who is this?" — short question-like phrases
+  const words = lower.split(' ').filter(Boolean).length;
+  const isQuestion = lower.endsWith('?') || lower.startsWith('who') || lower.startsWith('where') ||
+    lower.startsWith('what') || lower.startsWith('when') || lower.startsWith('how do i');
+  if (isQuestion && words <= 6) return true;
+
+  return false;
+}
+
+function isHighDistress(t: string): boolean {
   const lower = t.toLowerCase();
-  return WAKE_PHRASES.some(p => lower.includes(p));
+  return HIGH_DISTRESS_PHRASES.some(p => lower.includes(p));
 }
 
 /* ── Helpers ─────────────────────────────────────────── */
@@ -84,6 +142,7 @@ interface ConvMsg { who: 'patient' | 'sahay'; text: string; }
 type StatusType = 'starting' | 'listening' | 'thinking' | 'speaking' | 'error';
 
 export default function PatientPage() {
+  const navigate = useNavigate();
   const [time, setTime] = useState(new Date());
   const [profile, setProfile] = useState<Profile | null>(null);
   const [status, setStatus] = useState<StatusType>('starting');
@@ -287,8 +346,35 @@ export default function PatientPage() {
     setLog(prev => [...prev.slice(-7), { who: 'patient', text: transcript }]);
     setStatus('thinking');
 
+    // Auto-alert on high-distress phrases without waiting for LLM
+    if (isHighDistress(transcript) && !alertRef.current) {
+      alertRef.current = true;
+      setAlertSent(true);
+      uploadPanic('auto-distress');
+    }
+
     let responseText = '';
     let shouldAlert = false;
+
+    const patientName = profileRef.current?.patientName || 'dear';
+    const contactName = profileRef.current?.emergencyContactName || 'your caregiver';
+
+    // System prompt for the Alzheimer's companion
+    const systemPrompt = `You are Sahay, a warm, calm, and compassionate AI voice companion for ${patientName}, who is living with Alzheimer's disease.
+
+Your ONLY purpose: respond when ${patientName} is confused, scared, disoriented, asking for help, or experiencing a memory lapse.
+
+Rules you MUST follow:
+- Use VERY short, simple sentences. Maximum 2 sentences per response.
+- Speak in first person: "I am here. You are safe."
+- Always say their name gently in your first sentence.
+- NEVER argue with their reality or correct them harshly.
+- If they seem lost or in danger, reassure them AND tell them you are alerting ${contactName}.
+- If they ask who you are: "I am Sahay, your voice companion. I am always here with you."
+- If they ask their own name: Tell them warmly: "Your name is ${patientName}."
+- Respond in the same language they spoke. If Hindi/Bengali, respond in that language.
+- Do NOT give long explanations, lists, or advice. Just calm, human warmth.
+- Distress level detected: ${isHighDistress(transcript) ? 'HIGH — be extra gentle and reassuring' : 'MODERATE — calm and steady'}`;
 
     try {
       const res = await fetchRetry(`${API_BASE}/patient/voice`, {
@@ -296,6 +382,7 @@ export default function PatientPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           transcript, sentiment,
+          systemPrompt,
           patientProfile: profileRef.current || {},
           sessionHistory: sessionRef.current.slice(-6),
         }),
@@ -412,19 +499,16 @@ export default function PatientPage() {
   const name = profile?.patientName || '—';
 
   const orbGradient =
-    alertSent ? 'radial-gradient(circle, rgba(248,113,113,0.7) 0%, rgba(248,113,113,0.15) 70%)'
-    : speaking ? 'radial-gradient(circle, rgba(245,158,11,0.7) 0%, rgba(245,158,11,0.15) 70%)'
-    : 'radial-gradient(circle, rgba(124,111,250,0.6) 0%, rgba(124,111,250,0.12) 70%)';
+    alertSent ? 'linear-gradient(135deg, #f87171, #ef4444)'
+    : speaking ? 'linear-gradient(135deg, #f59e0b, #d97706)'
+    : 'linear-gradient(135deg, #7c6ffa, #4ade80, #38bdf8)';
 
-  const orbBorder =
-    alertSent ? 'rgba(248,113,113,0.5)'
-    : speaking ? 'rgba(245,158,11,0.5)'
-    : 'rgba(124,111,250,0.45)';
+
 
   const orbClass =
-    alertSent ? 'orb-alert'
-    : speaking ? 'orb-speak'
-    : 'orb-idle';
+    alertSent ? 'orb-deepgram alert'
+    : speaking ? 'orb-deepgram speaking'
+    : 'orb-deepgram';
 
   const statusLabel =
     status === 'listening' ? 'Listening'
@@ -452,7 +536,7 @@ export default function PatientPage() {
       className="font-ui"
       style={{
         minHeight: '100vh', width: '100%',
-        background: 'radial-gradient(ellipse at 50% 30%, rgba(124,111,250,0.07) 0%, #050508 60%)',
+        background: 'radial-gradient(ellipse at 50% 30%, var(--c-accent-dim) 0%, var(--c-bg) 60%)',
         display: 'flex', flexDirection: 'column',
         overflow: 'hidden',
       }}
@@ -461,9 +545,9 @@ export default function PatientPage() {
       <div style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         padding: '14px 20px', flexShrink: 0,
-        borderBottom: '1px solid rgba(255,255,255,0.05)',
+        borderBottom: '1px solid var(--c-border)',
       }}>
-        <span style={{ fontSize: 11, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.15)', fontFamily: 'Manrope', fontWeight: 700 }}>
+        <span style={{ fontSize: 11, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--c-text-4)', fontFamily: 'Manrope', fontWeight: 700 }}>
           SAHAY
         </span>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -501,7 +585,7 @@ export default function PatientPage() {
             fontWeight: 400,
             letterSpacing: '-2px',
             lineHeight: 0.95,
-            color: '#ede8e3',
+            color: 'var(--c-text-1)',
             textAlign: 'center',
           }}
         >
@@ -511,27 +595,23 @@ export default function PatientPage() {
         {/* Clock */}
         <div
           className="font-display"
-          style={{ fontSize: 'clamp(1.4rem, 4vw, 2.2rem)', fontWeight: 300, color: 'rgba(237,232,227,0.3)', letterSpacing: '0.05em' }}
+          style={{ fontSize: 'clamp(1.4rem, 4vw, 2.2rem)', fontWeight: 300, color: 'var(--c-text-4)', letterSpacing: '0.05em' }}
         >
           {time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </div>
 
 
-        {/* Orb — layered rings */}
-        <div style={{ position: 'relative', width: 104, height: 104, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ position: 'absolute', inset: -18, borderRadius: '50%', border: '1px solid rgba(124,111,250,0.1)' }} />
-          <div style={{ position: 'absolute', inset: -7, borderRadius: '50%', border: '1px solid rgba(124,111,250,0.18)' }} />
+        {/* Orb — Deepgram Voice Agent Design */}
+        <div style={{ position: 'relative', width: 140, height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div
             className={orbClass}
             style={{
-              width: 92, height: 92, borderRadius: '50%',
-              background: orbGradient,
-              border: `1.5px solid ${orbBorder}`,
+              width: '100%', height: '100%',
+              background: `linear-gradient(var(--c-surface), var(--c-surface)) padding-box, ${orbGradient} border-box`,
+              border: '3px solid transparent',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
             }}
-          >
-            <div style={{ width: 30, height: 30, borderRadius: '50%', background: 'rgba(255,255,255,0.07)', border: `1px solid ${orbBorder}` }} />
-          </div>
+          />
         </div>
 
         {/* Status badge */}
@@ -542,7 +622,7 @@ export default function PatientPage() {
 
         {/* Last heard */}
         {lastHeard && status !== 'listening' && (
-          <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.2)', fontStyle: 'italic', maxWidth: 340, textAlign: 'center' }}>
+          <div style={{ fontSize: 12, color: 'var(--c-text-3)', fontStyle: 'italic', maxWidth: 340, textAlign: 'center' }}>
             "{lastHeard}"
           </div>
         )}
@@ -554,13 +634,13 @@ export default function PatientPage() {
             style={{
               fontSize: 'clamp(1rem, 2vw, 1.25rem)',
               fontStyle: 'italic',
-              color: 'rgba(237,232,227,0.65)',
+              color: 'var(--c-text-2)',
               textAlign: 'center',
               maxWidth: 400,
               lineHeight: 1.55,
               padding: '16px 20px',
-              border: '1px solid rgba(255,255,255,0.08)',
-              background: 'rgba(255,255,255,0.025)',
+              border: '1px solid var(--c-border)',
+              background: 'var(--c-surface-2)',
             }}
           >
             "{lastSpoken}"
@@ -612,22 +692,39 @@ export default function PatientPage() {
           </div>
         )}
 
-        {/* Hint chips */}
-        <div style={{ textAlign: 'center', maxWidth: 380 }}>
+        {/* Hint chips — what the patient can say */}
+        <div style={{ textAlign: 'center', maxWidth: 400, display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center' }}>
           {['"What is my name?"', '"Show me the route"', '"I am lost"', '"I need help"'].map(h => (
             <span
               key={h}
               style={{
                 display: 'inline-block',
-                fontSize: 11, color: 'rgba(255,255,255,0.2)',
-                border: '1px solid rgba(255,255,255,0.07)',
-                padding: '3px 9px', margin: '3px',
+                fontSize: 11, color: 'var(--c-text-3)',
+                border: '1px solid var(--c-border)',
+                padding: '4px 10px', borderRadius: 9999,
                 letterSpacing: '0.03em',
+                background: 'var(--c-interactive)',
               }}
             >
               {h}
             </span>
           ))}
+          {/* Story time shortcut */}
+          <button
+            onClick={() => navigate('/storytime')}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              fontSize: 11, color: 'var(--c-accent)',
+              border: '1px solid var(--c-accent-dim)',
+              padding: '4px 10px', borderRadius: 9999,
+              letterSpacing: '0.03em',
+              background: 'var(--c-accent-dim)',
+              cursor: 'pointer', fontFamily: 'Manrope',
+            }}
+            aria-label="Show memory stories"
+          >
+            📖 Show me my memories
+          </button>
         </div>
 
         {/* Conversation log */}
@@ -647,22 +744,22 @@ export default function PatientPage() {
                     padding: '9px 14px',
                     fontSize: 13,
                     lineHeight: 1.5,
-                    color: 'rgba(255,255,255,0.75)',
+                    color: 'var(--c-text-2)',
                     ...(entry.who === 'patient'
                       ? {
-                          background: 'rgba(99,102,241,0.1)',
-                          border: '1px solid rgba(99,102,241,0.2)',
+                          background: 'var(--c-accent-dim)',
+                          border: '1px solid rgba(217,98,42,0.25)',
                           borderRadius: '12px 12px 3px 12px',
                         }
                       : {
-                          background: 'rgba(255,255,255,0.03)',
-                          border: '1px solid rgba(255,255,255,0.08)',
+                          background: 'var(--c-surface-2)',
+                          border: '1px solid var(--c-border)',
                           borderRadius: '12px 12px 12px 3px',
                         }
                     ),
                   }}
                 >
-                  <div style={{ fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)', marginBottom: 4 }}>
+                  <div style={{ fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--c-text-4)', marginBottom: 4 }}>
                     {entry.who === 'patient' ? 'You' : 'Sahay'}
                   </div>
                   {entry.text}
@@ -681,17 +778,18 @@ export default function PatientPage() {
             width: '100%', maxWidth: 400,
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14,
             padding: '18px 24px',
-            background: 'rgba(239,68,68,0.08)',
-            border: '1px solid rgba(239,68,68,0.3)',
-            color: '#fff',
+            background: 'rgba(192,57,43,0.10)',
+            border: '1px solid rgba(192,57,43,0.35)',
+            color: 'var(--c-text-1)',
             fontSize: 15, fontWeight: 600,
             letterSpacing: '0.02em',
             cursor: 'pointer',
             fontFamily: 'Manrope, sans-serif',
+            borderRadius: 12,
             transition: 'background 0.2s, border-color 0.2s',
           }}
-          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(239,68,68,0.16)'; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(239,68,68,0.08)'; }}
+          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(192,57,43,0.20)'; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(192,57,43,0.10)'; }}
         >
           <span style={{ fontSize: 22 }}>🆘</span>
           I Need Help — Call {profile?.emergencyContactName || 'Caregiver'}

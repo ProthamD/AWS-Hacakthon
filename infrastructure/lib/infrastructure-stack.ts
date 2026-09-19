@@ -320,6 +320,13 @@ export class SahayStack extends cdk.Stack {
     const generateQrFn = makeLambda('GenerateQR', 'generateQR');
     profilesTable.grantReadData(generateQrFn);
 
+    // Memories Narrator (AI Story Time)
+    const memoriesNarratorFn = makeLambda('MemoriesNarrator', 'memoriesNarrator');
+    memoriesNarratorFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['bedrock:InvokeModel'],
+      resources: ['*'],
+    }));
+
     // =========================================================================
     // STEP FUNCTIONS — Multi-Agent Orchestration
     // =========================================================================
@@ -518,6 +525,11 @@ exports.handler = async (event) => {
     // POST /patient/transcribe  (Groq Whisper STT)
     const patientTranscribe = patient.addResource('transcribe');
     patientTranscribe.addMethod('POST', lambdaIntegration(transcribeFn));
+
+    // POST /memories/narrate (AI Story Time)
+    const memories = api.root.addResource('memories');
+    const narrate = memories.addResource('narrate');
+    narrate.addMethod('POST', lambdaIntegration(memoriesNarratorFn));
 
     // =========================================================================
     // OUTPUTS
