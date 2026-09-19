@@ -1,342 +1,354 @@
 import { useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Circle, MapPin, Film, Mic, ImageIcon, AlertTriangle } from 'lucide-react';
+import { ArrowRight, Mic, ImageIcon, MapPin, Shield, Heart, Zap } from 'lucide-react';
 
-/* ── Grid geometry ─────────────────────────────────── */
-const V_LINES = [20, 35, 50, 65, 80];
-const H_LINES = [25, 50, 75];
-const PLUS_POSITIONS = [
-  { top: 25, left: 20 }, { top: 25, left: 50 }, { top: 25, left: 80 },
-  { top: 50, left: 35 }, { top: 50, left: 65 },
-  { top: 75, left: 20 }, { top: 75, left: 50 }, { top: 75, left: 80 },
+/* ── Animated counter hook ─────────────────────────────── */
+function useCount(target: number, duration = 1800) {
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    let start = 0;
+    const step = target / (duration / 16);
+    const timer = setInterval(() => {
+      start += step;
+      if (start >= target) { start = target; clearInterval(timer); }
+      if (ref.current) ref.current.textContent = Math.round(start).toLocaleString();
+    }, 16);
+    return () => clearInterval(timer);
+  }, [target, duration]);
+  return ref;
+}
+
+const FEATURES = [
+  {
+    icon: Mic,
+    title: 'Voice Companion',
+    desc: 'Speak your worries in Hindi or English. Sahay listens, understands, and responds with personalised guidance.',
+    color: 'var(--c-accent)',
+    glow: 'rgba(124,111,250,0.15)',
+  },
+  {
+    icon: Shield,
+    title: 'Emergency Triage',
+    desc: 'AI detects distress signals and automatically escalates to emergency contacts with a single care network alert.',
+    color: '#f87171',
+    glow: 'rgba(248,113,113,0.12)',
+  },
+  {
+    icon: MapPin,
+    title: 'Route Safety',
+    desc: 'Geofence alerts when the patient deviates from their safe route. A calming voice message plays on their device.',
+    color: 'var(--c-amber)',
+    glow: 'rgba(245,158,11,0.12)',
+  },
+  {
+    icon: ImageIcon,
+    title: 'Memory Theater',
+    desc: 'Upload family photos — Sahay narrates them softly to help patients reconnect with cherished moments.',
+    color: 'var(--c-calm)',
+    glow: 'rgba(74,222,128,0.1)',
+  },
 ];
 
-function Plus({ top, left, delay }: { top: number; left: number; delay: number }) {
+/* ── Mock app screens for hero visual ─────────────────── */
+function PatientMockup({ style }: { style?: React.CSSProperties }) {
   return (
-    <div className="anim-fade-in" style={{ position: 'absolute', top: `${top}%`, left: `${left}%`, transform: 'translate(-50%,-50%)', animationDelay: `${delay}ms`, opacity: 0 }}>
-      <svg width="12" height="12" viewBox="0 0 12 12">
-        <line x1="6" y1="0" x2="6" y2="12" stroke="rgba(255,255,255,0.5)" strokeWidth="1" />
-        <line x1="0" y1="6" x2="12" y2="6" stroke="rgba(255,255,255,0.5)" strokeWidth="1" />
-      </svg>
-    </div>
-  );
-}
-
-/* ── Floating animated screen mockups ──────────────── */
-function PatientMockup({ delay }: { delay: number }) {
-  return (
-    <div className="anim-scale-in" style={{
-      animationDelay: `${delay}ms`, opacity: 0,
-      animation: `scaleIn 0.8s cubic-bezier(0.16,1,0.3,1) ${delay}ms both, floatCard 6s ease-in-out ${delay + 800}ms infinite`,
-      background: '#050508',
-      border: '1px solid rgba(255,255,255,0.14)',
-      borderRadius: 12, overflow: 'hidden',
-      width: 160, flexShrink: 0,
-      boxShadow: '0 24px 60px rgba(0,0,0,0.7), 0 0 0 1px rgba(99,102,241,0.1)',
+    <div style={{
+      width: 200, borderRadius: 18, overflow: 'hidden',
+      background: 'var(--c-surface)', border: '1px solid var(--c-border-hi)',
+      boxShadow: '0 24px 64px rgba(0,0,0,0.6)',
+      flexShrink: 0,
+      ...style,
     }}>
-      {/* Top bar */}
-      <div style={{ padding: '8px 10px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontSize: 8, letterSpacing: '0.1em', color: 'rgba(255,255,255,0.2)', textTransform: 'uppercase' }}>SAHAY</span>
-        <span style={{ fontSize: 8, color: 'rgba(74,222,128,0.7)', border: '1px solid rgba(74,222,128,0.25)', padding: '1px 5px', borderRadius: 3 }}>◉ Live</span>
+      <div style={{ padding: '14px 14px 10px', borderBottom: '1px solid var(--c-border)' }}>
+        <div style={{ fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--c-accent)', fontFamily: 'Manrope, sans-serif', fontWeight: 700, marginBottom: 4 }}>Patient Mode</div>
+        <div style={{ fontSize: 13, fontFamily: "'Fraunces', serif", color: 'var(--c-text-1)', fontWeight: 400 }}>Meera Sharma</div>
       </div>
-      {/* Name */}
-      <div style={{ padding: '12px 10px 6px', textAlign: 'center' }}>
-        <div style={{ fontSize: 8, color: 'rgba(255,255,255,0.2)', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>FRIDAY, SEPTEMBER 19</div>
-        <div style={{ fontFamily: "'Fraunces', serif", fontSize: 26, fontWeight: 400, color: '#ede8e3', letterSpacing: '-1px', lineHeight: 1, marginBottom: 6 }}>Meera</div>
-        <div style={{ fontFamily: "'Fraunces', serif", fontSize: 14, color: 'rgba(237,232,227,0.3)', marginBottom: 10 }}>12:28 PM</div>
+      <div style={{ padding: '18px 14px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
         {/* Orb */}
         <div style={{
-          width: 36, height: 36, borderRadius: '50%',
-          border: '1px solid rgba(74,222,128,0.5)',
-          margin: '0 auto 8px',
+          width: 52, height: 52, borderRadius: '50%',
+          background: 'radial-gradient(circle, rgba(124,111,250,0.6) 0%, rgba(124,111,250,0.15) 70%)',
+          border: '1.5px solid rgba(124,111,250,0.4)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
+          boxShadow: '0 0 24px rgba(124,111,250,0.3)',
         }}>
-          <div style={{ width: 14, height: 14, borderRadius: '50%', background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.4)' }} />
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.8)" strokeWidth="1.5" strokeLinecap="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
         </div>
-        <div style={{ fontSize: 8, letterSpacing: '0.12em', color: 'rgba(74,222,128,0.7)', textTransform: 'uppercase' }}>Listening</div>
-      </div>
-      {/* Conversation snippets */}
-      <div style={{ padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-        <div style={{ alignSelf: 'flex-end', background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: '6px 6px 2px 6px', padding: '4px 7px', fontSize: 8, color: 'rgba(255,255,255,0.65)', lineHeight: 1.4 }}>
-          What is my name?
+        {/* Convo bubbles */}
+        <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ alignSelf: 'flex-end', background: 'rgba(124,111,250,0.18)', border: '1px solid rgba(124,111,250,0.28)', borderRadius: '10px 10px 2px 10px', padding: '5px 9px', fontSize: 9, color: 'rgba(240,240,248,0.85)', fontFamily: 'Noto Sans Devanagari, sans-serif' }}>Sahay, मेरा घर कहाँ है?</div>
+          <div style={{ alignSelf: 'flex-start', background: 'var(--c-surface-2)', border: '1px solid var(--c-border-hi)', borderRadius: '10px 10px 10px 2px', padding: '5px 9px', fontSize: 9, color: 'rgba(240,240,248,0.75)', fontFamily: 'Manrope, sans-serif' }}>आप बिल्कुल सुरक्षित हैं…</div>
         </div>
-        <div style={{ alignSelf: 'flex-start', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '6px 6px 6px 2px', padding: '4px 7px', fontSize: 8, color: 'rgba(255,255,255,0.55)', lineHeight: 1.4 }}>
-          Your name is Meera Sharma. You are safe.
+        {/* Status */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <div style={{ width: 5, height: 5, borderRadius: '50%', background: 'var(--c-calm)' }} />
+          <span style={{ fontSize: 8, color: 'var(--c-text-3)', fontFamily: 'Manrope, sans-serif', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Listening</span>
         </div>
-      </div>
-      {/* Panic strip */}
-      <div style={{ margin: '8px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 4, padding: '6px 8px', textAlign: 'center', fontSize: 8, color: 'rgba(255,255,255,0.5)', letterSpacing: '0.04em' }}>
-        🆘 I Need Help
       </div>
     </div>
   );
 }
 
-function ChatMockup({ delay }: { delay: number }) {
+function ChatMockup({ style }: { style?: React.CSSProperties }) {
   return (
-    <div className="anim-scale-in" style={{
-      animationDelay: `${delay}ms`, opacity: 0,
-      animation: `scaleIn 0.8s cubic-bezier(0.16,1,0.3,1) ${delay}ms both, floatCard 7s ease-in-out ${delay + 800}ms infinite`,
-      background: '#080810',
-      border: '1px solid rgba(255,255,255,0.1)',
-      borderRadius: 12, overflow: 'hidden',
-      width: 170, flexShrink: 0,
-      boxShadow: '0 24px 60px rgba(0,0,0,0.6)',
+    <div style={{
+      width: 200, borderRadius: 18, overflow: 'hidden',
+      background: 'var(--c-surface)', border: '1px solid var(--c-border-hi)',
+      boxShadow: '0 24px 64px rgba(0,0,0,0.6)',
+      flexShrink: 0,
+      ...style,
     }}>
-      <div style={{ padding: '8px 10px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontSize: 8, letterSpacing: '0.1em', color: 'rgba(255,255,255,0.2)', textTransform: 'uppercase' }}>03 / Talk to Sahay</span>
-        <Mic size={8} strokeWidth={1.5} style={{ color: 'rgba(99,102,241,0.6)' }} />
+      <div style={{ padding: '14px 14px 10px', borderBottom: '1px solid var(--c-border)' }}>
+        <div style={{ fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--c-accent)', fontFamily: 'Manrope, sans-serif', fontWeight: 700, marginBottom: 4 }}>Caregiver Chat</div>
+        <div style={{ fontSize: 12, fontFamily: 'Manrope, sans-serif', color: 'var(--c-text-2)' }}>Hindi · English</div>
       </div>
-      <div style={{ padding: '10px 8px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {/* AI message */}
-        <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '8px 8px 8px 2px', padding: '6px 8px' }}>
-          <div style={{ fontSize: 7, color: 'rgba(255,255,255,0.25)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 3 }}>Sahay</div>
-          <div style={{ fontSize: 8.5, color: 'rgba(255,255,255,0.7)', lineHeight: 1.5 }}>नमस्ते। मैं Sahay हूँ।</div>
-          <div style={{ fontSize: 8, color: 'rgba(255,255,255,0.4)', lineHeight: 1.4, marginTop: 2 }}>Hello! I'm here to listen.</div>
-        </div>
-        {/* User message */}
-        <div style={{ alignSelf: 'flex-end', background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.22)', borderRadius: '8px 8px 2px 8px', padding: '6px 8px', maxWidth: '80%' }}>
-          <div style={{ fontSize: 7, color: 'rgba(99,102,241,0.5)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 3 }}>You</div>
-          <div style={{ fontSize: 8.5, color: 'rgba(255,255,255,0.75)', lineHeight: 1.5 }}>वो मुझे पहचान नहीं रही</div>
-        </div>
+      <div style={{ padding: '12px 10px', display: 'flex', flexDirection: 'column', gap: 7 }}>
+        <div style={{ alignSelf: 'flex-end', background: 'rgba(124,111,250,0.18)', border: '1px solid rgba(124,111,250,0.25)', borderRadius: '10px 10px 2px 10px', padding: '6px 9px', fontSize: 9, color: 'rgba(240,240,248,0.85)', fontFamily: 'Noto Sans Devanagari, sans-serif', maxWidth: '85%' }}>वो मुझे पहचान नहीं रही आज</div>
+        <div style={{ alignSelf: 'flex-start', background: 'var(--c-surface-2)', border: '1px solid var(--c-border-hi)', borderRadius: '10px 10px 10px 2px', padding: '6px 9px', fontSize: 9, color: 'rgba(240,240,248,0.75)', maxWidth: '85%', fontFamily: 'Manrope, sans-serif' }}>यह Alzheimer's में सामान्य है…</div>
         {/* Distress bar */}
-        <div style={{ padding: '4px 0', marginTop: 2 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 7, color: 'rgba(255,255,255,0.3)', marginBottom: 3 }}>
-            <span>Wellbeing</span><span style={{ color: '#f59e0b' }}>5/10</span>
+        <div style={{ marginTop: 4 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 7, color: 'var(--c-text-3)', marginBottom: 3, fontFamily: 'Manrope, sans-serif', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+            <span>Wellbeing</span><span style={{ color: 'var(--c-calm)' }}>4/10</span>
           </div>
-          <div style={{ height: 2, background: 'rgba(255,255,255,0.08)', borderRadius: 1 }}>
-            <div style={{ width: '50%', height: '100%', background: '#f59e0b', borderRadius: 1 }} />
+          <div style={{ height: 3, background: 'rgba(255,255,255,0.08)', borderRadius: 2, overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: '40%', background: 'var(--c-calm)', borderRadius: 2 }} />
           </div>
-        </div>
-        {/* AI response */}
-        <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '8px 8px 8px 2px', padding: '6px 8px' }}>
-          <div style={{ fontSize: 8, color: 'rgba(255,255,255,0.55)', lineHeight: 1.5 }}>यह सामान्य है। थोड़ा आराम करें।</div>
         </div>
       </div>
     </div>
   );
 }
 
-function MemoryMockup({ delay }: { delay: number }) {
-  // Fake gradient "photo" cards
-  const photos = [
-    { bg: 'linear-gradient(135deg, #1a1040, #2d1b69)', caption: 'Our trip to Rishikesh' },
-    { bg: 'linear-gradient(135deg, #0a2a1a, #166534)', caption: 'Morning tea, 2019' },
-    { bg: 'linear-gradient(135deg, #3b0a0a, #7f1d1d)', caption: 'Family festival' },
-  ];
-
+function MemoryMockup({ style }: { style?: React.CSSProperties }) {
   return (
-    <div className="anim-scale-in" style={{
-      animationDelay: `${delay}ms`, opacity: 0,
-      animation: `scaleIn 0.8s cubic-bezier(0.16,1,0.3,1) ${delay}ms both, floatCard 5.5s ease-in-out ${delay + 800}ms infinite`,
-      background: '#060612',
-      border: '1px solid rgba(255,255,255,0.1)',
-      borderRadius: 12, overflow: 'hidden',
-      width: 155, flexShrink: 0,
-      boxShadow: '0 24px 60px rgba(0,0,0,0.65)',
+    <div style={{
+      width: 200, borderRadius: 18, overflow: 'hidden',
+      background: '#000', border: '1px solid var(--c-border-hi)',
+      boxShadow: '0 24px 64px rgba(0,0,0,0.6)',
+      flexShrink: 0,
+      ...style,
     }}>
-      <div style={{ padding: '8px 10px', borderBottom: '1px solid rgba(255,255,255,0.06)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontSize: 8, letterSpacing: '0.1em', color: 'rgba(255,255,255,0.2)', textTransform: 'uppercase' }}>Memory Theater</span>
-        <ImageIcon size={8} strokeWidth={1.5} style={{ color: 'rgba(99,102,241,0.5)' }} />
+      {/* Photo placeholder */}
+      <div style={{
+        height: 90, background: 'linear-gradient(135deg, #1a1a2e 0%, #2a1f3d 50%, #1a2a1f 100%)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <div style={{ textAlign: 'center' }}>
+          <ImageIcon size={20} strokeWidth={1} style={{ color: 'rgba(255,255,255,0.2)', display: 'block', margin: '0 auto 4px' }} />
+          <div style={{ fontSize: 8, color: 'rgba(255,255,255,0.2)', fontFamily: 'Manrope', letterSpacing: '0.08em' }}>FAMILY PHOTO</div>
+        </div>
       </div>
-      {/* Photo stack */}
-      <div style={{ position: 'relative', height: 90, margin: '8px', overflow: 'visible' }}>
-        {photos.map((p, i) => (
-          <div key={i} style={{
-            position: 'absolute', top: i * 4, left: i * 4,
-            width: 'calc(100% - 8px)', height: 80,
-            background: p.bg, borderRadius: 6,
-            border: '1px solid rgba(255,255,255,0.08)',
-            display: 'flex', flexDirection: 'column',
-            justifyContent: 'flex-end', padding: 6,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
-          }}>
-            {i === 0 && <div style={{ fontSize: 8, color: 'rgba(255,255,255,0.6)', lineHeight: 1.3 }}>{p.caption}</div>}
-          </div>
-        ))}
-      </div>
-      {/* Dots */}
-      <div style={{ display: 'flex', justifyContent: 'center', gap: 4, padding: '4px 0 6px' }}>
-        {[0, 1, 2].map(i => (
-          <div key={i} style={{ width: i === 0 ? 12 : 4, height: 4, borderRadius: 2, background: i === 0 ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.2)', transition: 'all 0.3s' }} />
-        ))}
-      </div>
-      {/* Caption */}
-      <div style={{ padding: '0 10px 10px', fontFamily: "'Fraunces', serif", fontSize: 9, fontStyle: 'italic', color: 'rgba(255,255,255,0.45)', lineHeight: 1.5, textAlign: 'center' }}>
-        "Our trip to Rishikesh, 2018"
-      </div>
-    </div>
-  );
-}
-
-/* ── Stat counter ──────────────────────────────────── */
-// Simple count-up hook
-function useCountUp(target: number) {
-  const [val, setVal] = useStateLocal(0);
-  const started = useRef(false);
-  useEffect(() => {
-    if (started.current) return;
-    started.current = true;
-    let i = 0;
-    const steps = 50;
-    const t = setInterval(() => {
-      i++;
-      setVal(Math.round((target * i) / steps));
-      if (i >= steps) clearInterval(t);
-    }, 1600 / steps);
-    return () => clearInterval(t);
-  }, [target]);
-  return val;
-}
-
-import { useState as useStateLocal } from 'react';
-
-/* ── Tech ticker ────────────────────────────────────── */
-const TECH = ['Lambda', 'API Gateway', 'DynamoDB', 'S3', 'SNS', 'EventBridge', 'Amplify', 'CDK', 'LLaMA 3.3', 'Deepgram Nova-3', 'Groq Whisper', 'React 18', 'TypeScript'];
-
-function Ticker() {
-  const doubled = [...TECH, ...TECH];
-  return (
-    <div style={{ overflow: 'hidden', width: '100%', padding: '18px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
-      <div className="ticker-track" style={{ display: 'flex', gap: 12, width: 'max-content' }}>
-        {doubled.map((t, i) => (
-          <span key={i} className="font-ui" style={{ fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.3)', border: '1px solid rgba(255,255,255,0.08)', padding: '3px 10px', borderRadius: 4, whiteSpace: 'nowrap' }}>
-            {t}
-          </span>
-        ))}
+      <div style={{ padding: '12px 12px 14px', textAlign: 'center' }}>
+        <div style={{ fontFamily: "'Fraunces', serif", fontSize: 11, fontStyle: 'italic', color: 'rgba(240,240,248,0.7)', lineHeight: 1.5, marginBottom: 8 }}>
+          "Our trip to Rishikesh, 2018"
+        </div>
+        {/* Dots */}
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 4 }}>
+          {[1,2,3].map((_, i) => <div key={i} style={{ width: i===0?14:4, height: 4, borderRadius: 2, background: i===0?'#fff':'rgba(255,255,255,0.2)' }} />)}
+        </div>
       </div>
     </div>
   );
 }
 
 export default function HomePage() {
-  const count1 = useCountUp(88);
-  const count2 = useCountUp(200);
+  const count1Ref = useCount(88);   // 8.8M shown as 88 → "8.8M"
+  const count2Ref = useCount(200);
 
   return (
-    <div className="font-ui" style={{ minHeight: '100vh', position: 'relative', background: '#0a0a12', overflow: 'hidden' }}>
+    <div className="font-ui" style={{ overflowX: 'hidden' }}>
 
-      {/* ── Gradient background ─────────────────────── */}
-      <div style={{ position: 'absolute', inset: 0, zIndex: 0, background: 'radial-gradient(ellipse 70% 50% at 60% -5%, rgba(99,102,241,0.14), transparent)', pointerEvents: 'none' }} />
-      <div style={{ position: 'absolute', inset: 0, zIndex: 0, background: 'radial-gradient(ellipse 50% 40% at 20% 80%, rgba(99,102,241,0.06), transparent)', pointerEvents: 'none' }} />
+      {/* ── Hero ──────────────────────────────────────────── */}
+      <section style={{ minHeight: '80vh', display: 'flex', alignItems: 'center', position: 'relative', padding: '48px 0 60px' }}>
 
-      {/* ── Grid lines — vertical ───────────────────── */}
-      {V_LINES.map((l, i) => (
-        <div key={`v${i}`} className="anim-grid-h" style={{ position: 'absolute', top: 0, bottom: 0, left: `${l}%`, width: 1, background: 'rgba(255,255,255,0.04)', transformOrigin: 'top', animationDelay: `${300 + i * 80}ms`, zIndex: 1, opacity: 0 }} />
-      ))}
+        {/* Background ambient glow */}
+        <div style={{
+          position: 'absolute', top: '10%', left: '-10%',
+          width: '55%', height: '55%',
+          background: 'radial-gradient(ellipse, rgba(124,111,250,0.08) 0%, transparent 70%)',
+          pointerEvents: 'none',
+        }} aria-hidden="true" />
+        <div style={{
+          position: 'absolute', top: '20%', right: '-5%',
+          width: '40%', height: '50%',
+          background: 'radial-gradient(ellipse, rgba(74,222,128,0.05) 0%, transparent 70%)',
+          pointerEvents: 'none',
+        }} aria-hidden="true" />
 
-      {/* ── Grid lines — horizontal ─────────────────── */}
-      {H_LINES.map((h, i) => (
-        <div key={`h${i}`} className="anim-grid-v" style={{ position: 'absolute', left: 0, right: 0, top: `${h}%`, height: 1, background: 'rgba(255,255,255,0.04)', transformOrigin: 'left', animationDelay: `${500 + i * 80}ms`, zIndex: 1, opacity: 0 }} />
-      ))}
+        <div style={{ maxWidth: 1100, margin: '0 auto', padding: '0 24px', width: '100%', display: 'grid', gridTemplateColumns: '1fr auto', gap: 48, alignItems: 'center' }}>
 
-      {/* ── Plus marks ──────────────────────────────── */}
-      {PLUS_POSITIONS.map((p, i) => (
-        <Plus key={i} top={p.top} left={p.left} delay={800 + i * 60} />
-      ))}
+          {/* Left: Text */}
+          <div style={{ maxWidth: 560 }}>
+            {/* Eyebrow */}
+            <div className="anim-fade-up" style={{ animationDelay: '0.05s', marginBottom: 24 }}>
+              <span className="badge badge-accent">
+                <Heart size={10} strokeWidth={2} /> AWS Hackathon 2026
+              </span>
+            </div>
 
-      {/* ── Capability nodes (desktop, behind cards) ── */}
-      <div className="hidden lg:block" style={{ position: 'absolute', inset: 0, zIndex: 2, pointerEvents: 'none' }}>
-        <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }} preserveAspectRatio="none">
-          <line x1="20%" y1="40%" x2="48%" y2="58%" stroke="rgba(255,255,255,0.1)" strokeWidth="1" strokeDasharray="4 6" className="anim-draw-line" style={{ animationDelay: '1800ms', strokeDashoffset: 300 }} />
-          <line x1="52%" y1="56%" x2="72%" y2="36%" stroke="rgba(255,255,255,0.1)" strokeWidth="1" strokeDasharray="4 6" className="anim-draw-line" style={{ animationDelay: '2000ms', strokeDashoffset: 300 }} />
-          <line x1="20%" y1="38%" x2="72%" y2="34%" stroke="rgba(255,255,255,0.06)" strokeWidth="1" strokeDasharray="3 8" className="anim-draw-line" style={{ animationDelay: '2200ms', strokeDashoffset: 300 }} />
-        </svg>
-
-        {[
-          { label: '[ AI_PANIC_DETECTION ]', desc: 'Distress score 1–10. Alerts only at 7+.', icon: AlertTriangle, top: '34%', left: '16%', delay: 1200 },
-          { label: '[ LIVE_ROUTE ]', desc: 'Google Maps when patient asks where to go.', icon: MapPin, top: '60%', left: '48%', delay: 1400 },
-          { label: '[ MEMORY_THEATER ]', desc: 'Family photos with AI narration.', icon: Film, top: '28%', left: '70%', delay: 1600 },
-        ].map((node, i) => (
-          <div key={i} className="anim-scale-in" style={{ position: 'absolute', top: node.top, left: node.left, transform: 'translate(-50%,-50%)', animationDelay: `${node.delay}ms`, opacity: 0, pointerEvents: 'auto' }}>
-            <div style={{ border: '1px solid rgba(255,255,255,0.14)', background: 'rgba(10,10,18,0.8)', backdropFilter: 'blur(12px)', padding: '12px 16px', maxWidth: 200, cursor: 'default', transition: 'border-color 0.25s' }}
-              onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.borderColor = 'rgba(99,102,241,0.5)'; }}
-              onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.borderColor = 'rgba(255,255,255,0.14)'; }}
+            {/* H1 */}
+            <h1
+              className="font-display anim-fade-up"
+              style={{
+                animationDelay: '0.1s',
+                fontSize: 'clamp(2.8rem, 6vw, 5rem)',
+                fontWeight: 300,
+                lineHeight: 1.05,
+                letterSpacing: '-2px',
+                color: 'var(--c-text-1)',
+                marginBottom: 20,
+              }}
             >
-              <node.icon size={12} style={{ color: 'rgba(99,102,241,0.7)', marginBottom: 7 }} strokeWidth={1.5} />
-              <div style={{ fontSize: 10, letterSpacing: '0.08em', color: 'rgba(255,255,255,0.85)', marginBottom: 5, textTransform: 'uppercase', fontWeight: 600 }}>{node.label}</div>
-              <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', lineHeight: 1.5 }}>{node.desc}</div>
+              Care that<br />
+              <em style={{
+                fontStyle: 'italic',
+                background: 'linear-gradient(135deg, #7c6ffa 0%, #c4b8ff 100%)',
+                WebkitBackgroundClip: 'text',
+                WebkitTextFillColor: 'transparent',
+              }}>speaks</em> first.
+            </h1>
+
+            <p className="anim-fade-up" style={{
+              animationDelay: '0.18s',
+              fontSize: 17,
+              lineHeight: 1.7,
+              color: 'var(--c-text-2)',
+              marginBottom: 36,
+              maxWidth: 480,
+            }}>
+              Sahay (<span style={{ fontFamily: "'Noto Sans Devanagari', serif" }}>सहाय</span>) is an AI companion for Indian family caregivers of Alzheimer's patients — giving voice-first guidance in Hindi and English, 24 hours a day.
+            </p>
+
+            {/* Stats */}
+            <div className="anim-fade-up" style={{ animationDelay: '0.24s', display: 'flex', gap: 32, marginBottom: 40 }}>
+              <div>
+                <div className="stat-number" style={{ fontSize: 36, color: 'var(--c-text-1)' }}>
+                  <span ref={count1Ref}>0</span>
+                  <span style={{ fontSize: 20, color: 'var(--c-accent)' }}>L+</span>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--c-text-3)', marginTop: 3, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Dementia patients</div>
+              </div>
+              <div style={{ width: 1, background: 'var(--c-border)', flexShrink: 0 }} aria-hidden="true" />
+              <div>
+                <div className="stat-number" style={{ fontSize: 36, color: 'var(--c-text-1)' }}>
+                  <span ref={count2Ref}>0</span>
+                  <span style={{ fontSize: 20, color: 'var(--c-calm)' }}>K+</span>
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--c-text-3)', marginTop: 3, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Caregivers alone</div>
+              </div>
+            </div>
+
+            {/* CTAs */}
+            <div className="anim-fade-up" style={{ animationDelay: '0.3s', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <Link to="/setup" className="btn btn-primary" style={{ fontSize: 14 }}>
+                Get Started <ArrowRight size={15} strokeWidth={2} />
+              </Link>
+              <Link to="/chat" className="btn btn-ghost" style={{ fontSize: 14 }}>
+                <Mic size={15} strokeWidth={1.8} /> Try Voice Chat
+              </Link>
             </div>
           </div>
-        ))}
+
+          {/* Right: Floating app mockups */}
+          <div className="hide-mobile" style={{ position: 'relative', width: 260, height: 380 }}>
+            <div className="anim-float" style={{ position: 'absolute', top: 0, left: 20, animationDuration: '6s', animationDelay: '0s' }}>
+              <PatientMockup />
+            </div>
+            <div className="anim-float-alt" style={{ position: 'absolute', top: 120, left: 0, animationDuration: '7s', animationDelay: '0.5s' }}>
+              <ChatMockup />
+            </div>
+            <div className="anim-float" style={{ position: 'absolute', top: 200, left: 30, animationDuration: '8s', animationDelay: '1s' }}>
+              <MemoryMockup />
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      {/* ── Divider ─────────────────────────────────────── */}
+      <div style={{ maxWidth: 1100, margin: '0 auto', padding: '0 24px' }}>
+        <div style={{ height: 1, background: 'linear-gradient(90deg, transparent, var(--c-border) 30%, var(--c-border) 70%, transparent)' }} />
       </div>
 
-      {/* ── Main layout: hero left + cards right ────── */}
-      <div style={{ position: 'relative', zIndex: 3, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', padding: '80px 20px 0', gap: 40, minHeight: '80vh' }}>
-
-        {/* LEFT — hero text */}
-        <div style={{ flex: '0 0 auto', maxWidth: 480, paddingTop: 20 }}>
-
-          {/* Badge */}
-          <div className="anim-fade-up" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 11, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(99,102,241,0.9)', border: '1px solid rgba(99,102,241,0.22)', padding: '4px 12px', marginBottom: 28, animationDelay: '100ms', opacity: 0 }}>
-            <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#6366f1', display: 'inline-block' }} />
-            Voice-first · Hindi · Bengali · English
-          </div>
-
-          {/* H1 */}
-          <h1 className="font-display anim-fade-up" style={{ fontSize: 'clamp(2.8rem, 5.5vw, 5.5rem)', fontWeight: 400, lineHeight: 1.04, letterSpacing: '-2px', color: '#fff', marginBottom: 24, animationDelay: '200ms', opacity: 0 }}>
-            The caregiver<br />
-            deserves<br />
-            <em style={{ fontStyle: 'italic', color: 'rgba(255,255,255,0.45)' }}>rest too.</em>
-          </h1>
-
-          {/* Subhead */}
-          <p className="anim-fade-up" style={{ fontSize: 16, color: 'rgba(255,255,255,0.55)', lineHeight: 1.7, maxWidth: 380, marginBottom: 36, animationDelay: '350ms', opacity: 0 }}>
-            Set up a profile in 5 minutes.<br />
-            Sahay handles the rest, day and night.
-          </p>
-
-          {/* CTAs */}
-          <div className="anim-fade-up" style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 52, animationDelay: '500ms', opacity: 0 }}>
-            <Link to="/setup" style={{ display: 'inline-flex', alignItems: 'center', gap: 10, background: '#6366f1', color: '#fff', padding: '12px 22px', fontSize: 13, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', textDecoration: 'none', transition: 'background 0.2s' }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#818cf8')}
-              onMouseLeave={e => (e.currentTarget.style.background = '#6366f1')}>
-              Start Setup <ArrowRight size={15} strokeWidth={1.8} />
-            </Link>
-            <Link to="/patient" style={{ display: 'inline-flex', alignItems: 'center', gap: 10, border: '1px solid rgba(255,255,255,0.22)', color: '#fff', padding: '12px 22px', fontSize: 13, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', textDecoration: 'none', transition: 'border-color 0.2s' }}
-              onMouseEnter={e => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.5)')}
-              onMouseLeave={e => (e.currentTarget.style.borderColor = 'rgba(255,255,255,0.22)')}>
-              <Circle size={13} strokeWidth={1.5} /> Patient Mode
-            </Link>
-          </div>
-
-          {/* Disclaimer card */}
-          <div className="anim-fade-up" style={{ border: '1px solid rgba(255,255,255,0.08)', padding: '14px 18px', maxWidth: 340, background: 'rgba(255,255,255,0.025)', animationDelay: '700ms', opacity: 0 }}>
-            <div style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(99,102,241,0.7)', marginBottom: 7 }}>NOT A DIAGNOSIS — A COMPANION</div>
-            <p style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', lineHeight: 1.65 }}>Built with caregivers, for the moments a diagnosis doesn't prepare you for.</p>
-          </div>
+      {/* ── Features ─────────────────────────────────────── */}
+      <section style={{ maxWidth: 1100, margin: '0 auto', padding: '72px 24px' }}>
+        <div style={{ marginBottom: 48 }}>
+          <div className="section-label anim-fade-up" style={{ marginBottom: 12 }}>What Sahay does</div>
+          <h2 className="font-display anim-fade-up" style={{ animationDelay: '0.08s', fontSize: 'clamp(1.8rem, 4vw, 3rem)', fontWeight: 300, letterSpacing: '-1px', color: 'var(--c-text-1)', lineHeight: 1.15 }}>
+            Built for the realities<br />
+            <em style={{ color: 'var(--c-text-2)', fontStyle: 'italic' }}>of Indian caregiving.</em>
+          </h2>
         </div>
 
-        {/* RIGHT — animated floating screen mockups */}
-        <div className="hidden md:flex" style={{ flexDirection: 'column', gap: 28, paddingTop: 40, alignItems: 'flex-end', flex: '0 0 auto' }}>
-          {/* Row 1: Patient + Chat side by side */}
-          <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-            <PatientMockup delay={900} />
-            <ChatMockup delay={1100} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 16 }}>
+          {FEATURES.map((f, i) => (
+            <div
+              key={f.title}
+              className="glass-card anim-fade-up"
+              style={{ animationDelay: `${0.1 + i * 0.07}s`, padding: 24, cursor: 'default' }}
+            >
+              {/* Icon */}
+              <div style={{
+                width: 44, height: 44, borderRadius: 12,
+                background: f.glow,
+                border: `1px solid ${f.color}33`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                marginBottom: 18,
+              }}>
+                <f.icon size={20} strokeWidth={1.5} style={{ color: f.color }} />
+              </div>
+              <h3 style={{ fontSize: 16, fontWeight: 600, color: 'var(--c-text-1)', marginBottom: 8, letterSpacing: '-0.2px' }}>{f.title}</h3>
+              <p style={{ fontSize: 13.5, lineHeight: 1.65, color: 'var(--c-text-2)' }}>{f.desc}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ── CTA strip ────────────────────────────────────── */}
+      <section style={{ maxWidth: 1100, margin: '0 auto', padding: '0 24px 80px' }}>
+        <div style={{
+          borderRadius: 20,
+          padding: '48px 40px',
+          background: 'linear-gradient(135deg, rgba(124,111,250,0.12) 0%, rgba(124,111,250,0.04) 60%, rgba(74,222,128,0.06) 100%)',
+          border: '1px solid rgba(124,111,250,0.2)',
+          display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 20,
+          position: 'relative', overflow: 'hidden',
+        }}>
+          {/* Glow orb */}
+          <div style={{
+            position: 'absolute', top: -40, right: -40,
+            width: 200, height: 200,
+            background: 'radial-gradient(circle, rgba(124,111,250,0.15) 0%, transparent 70%)',
+            pointerEvents: 'none',
+          }} aria-hidden="true" />
+          <div>
+            <div className="section-label" style={{ marginBottom: 10 }}>
+              <Zap size={11} style={{ display: 'inline', marginRight: 5 }} />
+              Ready in 2 minutes
+            </div>
+            <h2 className="font-display" style={{ fontSize: 'clamp(1.6rem, 3vw, 2.4rem)', fontWeight: 300, letterSpacing: '-1px', color: 'var(--c-text-1)', lineHeight: 1.2 }}>
+              Set up once.<br />
+              <em style={{ fontStyle: 'italic', color: 'var(--c-text-2)' }}>Sahay handles the rest.</em>
+            </h2>
           </div>
-          {/* Row 2: Memory centered */}
-          <div style={{ display: 'flex', justifyContent: 'center', width: '100%', paddingRight: 20 }}>
-            <MemoryMockup delay={1300} />
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            <Link to="/setup" className="btn btn-primary">
+              Set Up Patient Profile <ArrowRight size={14} strokeWidth={2} />
+            </Link>
+            <Link to="/patient" className="btn btn-ghost">
+              Open Patient Mode
+            </Link>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* ── Stats strip ─────────────────────────────── */}
-      <div className="anim-fade-up" style={{ position: 'relative', zIndex: 3, marginTop: 60, borderTop: '1px solid rgba(255,255,255,0.06)', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', animationDelay: '800ms', opacity: 0 }}>
-        {[
-          { value: `${(count1 / 10).toFixed(1)}M`, label: 'Indians living with dementia', color: '#fff' },
-          { value: `<${count2}ms`, label: 'Deepgram real-time response', color: 'rgba(74,222,128,0.9)' },
-          { value: '0', label: 'Tech skills required', color: '#fff' },
-        ].map((s, i) => (
-          <div key={i} style={{ padding: '28px 20px', borderRight: i < 2 ? '1px solid rgba(255,255,255,0.06)' : 'none' }}>
-            <div className="font-display" style={{ fontSize: 'clamp(2rem, 4vw, 3.2rem)', fontWeight: 400, letterSpacing: '-1px', color: s.color, lineHeight: 1 }}>{s.value}</div>
-            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginTop: 6, lineHeight: 1.5 }}>{s.label}</div>
-          </div>
-        ))}
+      {/* ── Disclaimer ────────────────────────────────────── */}
+      <div style={{ maxWidth: 1100, margin: '0 auto', padding: '0 24px 48px', textAlign: 'center' }}>
+        <p style={{ fontSize: 12, color: 'var(--c-text-4)', lineHeight: 1.7 }}>
+          Sahay is an AI companion, not a medical device. Not for clinical use. Always provide human escalation paths.<br />
+          For emergencies: <strong style={{ color: 'var(--c-text-3)' }}>112</strong> (India) · ARDSI Helpline: <strong style={{ color: 'var(--c-text-3)' }}>1800-200-ARDSI</strong>
+        </p>
       </div>
-
-      {/* ── Tech ticker ──────────────────────────────── */}
-      <Ticker />
 
     </div>
   );

@@ -411,11 +411,15 @@ export default function PatientPage() {
   /* ── Render ──────────────────────────────────────── */
   const name = profile?.patientName || '—';
 
-  const orbColor =
-    alertSent ? '#ef4444'
-    : speaking ? '#f59e0b'
-    : status === 'listening' ? 'rgba(255,255,255,0.4)'
-    : 'rgba(255,255,255,0.2)';
+  const orbGradient =
+    alertSent ? 'radial-gradient(circle, rgba(248,113,113,0.7) 0%, rgba(248,113,113,0.15) 70%)'
+    : speaking ? 'radial-gradient(circle, rgba(245,158,11,0.7) 0%, rgba(245,158,11,0.15) 70%)'
+    : 'radial-gradient(circle, rgba(124,111,250,0.6) 0%, rgba(124,111,250,0.12) 70%)';
+
+  const orbBorder =
+    alertSent ? 'rgba(248,113,113,0.5)'
+    : speaking ? 'rgba(245,158,11,0.5)'
+    : 'rgba(124,111,250,0.45)';
 
   const orbClass =
     alertSent ? 'orb-alert'
@@ -423,17 +427,24 @@ export default function PatientPage() {
     : 'orb-idle';
 
   const statusLabel =
-    status === 'listening' ? 'Listening' :
-    status === 'thinking' ? 'Thinking…' :
-    status === 'speaking' ? 'Speaking' :
-    status === 'starting' ? 'Starting…' :
-    status === 'error' ? 'Allow microphone access' : '';
+    status === 'listening' ? 'Listening'
+    : status === 'thinking' ? 'Thinking…'
+    : status === 'speaking' ? 'Speaking'
+    : status === 'starting' ? 'Starting…'
+    : status === 'error' ? 'Allow microphone access' : '';
 
   const statusColor =
-    status === 'listening' ? 'rgba(255,255,255,0.35)'
-    : status === 'thinking' ? 'rgba(99,102,241,0.8)'
+    status === 'listening' ? 'rgba(124,111,250,0.8)'
+    : status === 'thinking' ? 'rgba(155,143,252,0.9)'
     : status === 'speaking' ? '#f59e0b'
-    : status === 'error' ? '#ef4444'
+    : status === 'error' ? '#f87171'
+    : 'rgba(255,255,255,0.2)';
+
+  const statusDot =
+    status === 'listening' ? '#4ade80'
+    : status === 'thinking' ? '#7c6ffa'
+    : status === 'speaking' ? '#f59e0b'
+    : status === 'error' ? '#f87171'
     : 'rgba(255,255,255,0.2)';
 
   return (
@@ -441,7 +452,7 @@ export default function PatientPage() {
       className="font-ui"
       style={{
         minHeight: '100vh', width: '100%',
-        background: '#050508',
+        background: 'radial-gradient(ellipse at 50% 30%, rgba(124,111,250,0.07) 0%, #050508 60%)',
         display: 'flex', flexDirection: 'column',
         overflow: 'hidden',
       }}
@@ -452,17 +463,20 @@ export default function PatientPage() {
         padding: '14px 20px', flexShrink: 0,
         borderBottom: '1px solid rgba(255,255,255,0.05)',
       }}>
-        <span style={{ fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.18)', fontFamily: 'Manrope' }}>
-          SAHAY · सहाय
+        <span style={{ fontSize: 11, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.15)', fontFamily: 'Manrope', fontWeight: 700 }}>
+          SAHAY
         </span>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span style={{
-            fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase',
-            color: DEEPGRAM_KEY ? 'rgba(74,222,128,0.9)' : 'rgba(99,102,241,0.7)',
-            border: `1px solid ${DEEPGRAM_KEY ? 'rgba(74,222,128,0.3)' : 'rgba(99,102,241,0.3)'}`,
-            padding: '3px 8px',
+            display: 'inline-flex', alignItems: 'center', gap: 5,
+            fontSize: 9, letterSpacing: '0.08em', textTransform: 'uppercase',
+            background: DEEPGRAM_KEY ? 'rgba(74,222,128,0.1)' : 'rgba(124,111,250,0.1)',
+            border: `1px solid ${DEEPGRAM_KEY ? 'rgba(74,222,128,0.25)' : 'rgba(124,111,250,0.25)'}`,
+            color: DEEPGRAM_KEY ? 'rgba(74,222,128,0.9)' : 'rgba(155,143,252,0.9)',
+            padding: '4px 10px', borderRadius: 9999, fontWeight: 700,
           }}>
-            {DEEPGRAM_KEY ? '◉ Deepgram Live' : '⚡ Groq'}
+            <span style={{ width: 5, height: 5, borderRadius: '50%', background: DEEPGRAM_KEY ? '#4ade80' : '#7c6ffa', animation: 'blinkDot 1.4s step-end infinite', display: 'inline-block' }} />
+            {DEEPGRAM_KEY ? 'Deepgram Live' : 'Groq Whisper'}
           </span>
         </div>
       </div>
@@ -502,31 +516,28 @@ export default function PatientPage() {
           {time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </div>
 
-        {/* Orb */}
-        <div
-          className={orbClass}
-          style={{
-            width: 80, height: 80,
-            borderRadius: '50%',
-            border: `1px solid ${orbColor}`,
-            position: 'relative',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}
-        >
-          <div style={{
-            width: 36, height: 36, borderRadius: '50%',
-            background: `${orbColor.replace(')', ', 0.08)').replace('rgba', 'rgba')}`,
-            border: `1px solid ${orbColor}`,
-          }} />
+
+        {/* Orb — layered rings */}
+        <div style={{ position: 'relative', width: 104, height: 104, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ position: 'absolute', inset: -18, borderRadius: '50%', border: '1px solid rgba(124,111,250,0.1)' }} />
+          <div style={{ position: 'absolute', inset: -7, borderRadius: '50%', border: '1px solid rgba(124,111,250,0.18)' }} />
+          <div
+            className={orbClass}
+            style={{
+              width: 92, height: 92, borderRadius: '50%',
+              background: orbGradient,
+              border: `1.5px solid ${orbBorder}`,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <div style={{ width: 30, height: 30, borderRadius: '50%', background: 'rgba(255,255,255,0.07)', border: `1px solid ${orbBorder}` }} />
+          </div>
         </div>
 
-        {/* Status */}
-        <div style={{
-          fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase',
-          color: statusColor,
-          ...(status === 'speaking' ? { animation: 'blinkStatus 1.5s step-end infinite' } : {}),
-        }}>
-          {statusLabel}
+        {/* Status badge */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: statusDot, display: 'inline-block', animation: 'blinkDot 1.4s step-end infinite' }} />
+          <span style={{ fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: statusColor, fontWeight: 700 }}>{statusLabel}</span>
         </div>
 
         {/* Last heard */}

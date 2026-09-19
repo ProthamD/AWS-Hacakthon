@@ -1,13 +1,13 @@
 import { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 import { API_BASE, DEMO_CAREGIVER_ID } from '../App';
-import { Send, Mic, MicOff } from 'lucide-react';
+import { Send, Mic, MicOff, Settings2 } from 'lucide-react';
 
 const EXAMPLES = [
-  { hi: 'वो मुझे पहचान नहीं रही आज', en: "She doesn't recognise me today" },
-  { hi: 'वो बार-बार एक ही बात पूछती है', en: 'She keeps asking the same question' },
-  { hi: 'रात में बहुत बेचैन रहती है', en: 'She is very restless at night' },
-  { hi: 'मैं बहुत थक गई हूँ', en: 'I am very exhausted' },
+  { hi: 'वो मुझे पहचान नहीं रही', en: "She doesn't recognise me today" },
+  { hi: 'बार-बार एक ही बात पूछती है', en: 'She keeps repeating the same question' },
+  { hi: 'रात में बहुत बेचैन रहती है', en: 'Very restless at night' },
+  { hi: 'मैं बहुत थक गई हूँ', en: 'I am exhausted' },
 ];
 
 interface Msg {
@@ -20,15 +20,47 @@ interface Msg {
 
 function DistressBar({ score }: { score: number }) {
   const pct = (score / 10) * 100;
-  const color = score <= 3 ? 'rgba(74,222,128,0.8)' : score <= 6 ? '#f59e0b' : '#ef4444';
+  const color = score <= 3 ? 'var(--c-calm)' : score <= 6 ? 'var(--c-amber)' : 'var(--c-red)';
+  const label = score <= 3 ? 'Low stress' : score <= 6 ? 'Moderate' : 'High stress';
   return (
-    <div style={{ marginTop: 8 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: 'rgba(255,255,255,0.4)', marginBottom: 4 }}>
-        <span style={{ letterSpacing: '0.08em', textTransform: 'uppercase' }}>Wellbeing</span>
-        <span style={{ color }}>{score}/10</span>
+    <div style={{ marginTop: 10, padding: '8px 12px', background: 'rgba(255,255,255,0.02)', borderRadius: 8, border: '1px solid var(--c-border)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+        <span style={{ fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--c-text-3)', fontWeight: 700 }}>Wellbeing</span>
+        <span style={{ fontSize: 11, color, fontWeight: 700 }}>{label} · {score}/10</span>
       </div>
-      <div style={{ height: 2, background: 'rgba(255,255,255,0.08)', borderRadius: 1, overflow: 'hidden' }}>
-        <div style={{ height: '100%', width: `${pct}%`, background: color, transition: 'width 0.6s' }} />
+      <div className="distress-bar-track">
+        <div
+          className="distress-bar-fill"
+          style={{ width: `${pct}%`, background: color }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function SahayAvatar() {
+  return (
+    <div style={{
+      width: 28, height: 28, borderRadius: 8, flexShrink: 0, marginTop: 2,
+      background: 'linear-gradient(135deg, #7c6ffa 0%, #9b8ffc 100%)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      boxShadow: '0 2px 8px rgba(124,111,250,0.35)',
+    }} aria-hidden="true">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.9)" strokeWidth="1.8" strokeLinecap="round">
+        <circle cx="12" cy="12" r="3" /><circle cx="12" cy="12" r="8" strokeOpacity="0.4" />
+      </svg>
+    </div>
+  );
+}
+
+function TypingIndicator() {
+  return (
+    <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+      <SahayAvatar />
+      <div className="bubble-ai" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 5 }}>
+        <span className="typing-dot" />
+        <span className="typing-dot" />
+        <span className="typing-dot" />
       </div>
     </div>
   );
@@ -43,16 +75,22 @@ export default function ChatPage() {
   const [loading, setLoading] = useState(false);
   const [recording, setRecording] = useState(false);
   const [orchestrate, setOrchestrate] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const recRef = useRef<MediaRecorder | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [msgs]);
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [msgs, loading]);
 
   const send = async (text: string) => {
     if (!text.trim() || loading) return;
     setMsgs(p => [...p, { id: Date.now(), role: 'user', content: text }]);
     setInput('');
     setLoading(true);
+    // Reset textarea height
+    if (textareaRef.current) { textareaRef.current.style.height = '44px'; }
     try {
       const ep = orchestrate ? `${API_BASE}/chat/orchestrate` : `${API_BASE}/chat`;
       const { data } = await axios.post(ep, { caregiverId: DEMO_CAREGIVER_ID, message: text, synthesizeAudio: true });
@@ -63,7 +101,7 @@ export default function ChatPage() {
         distressScore: data.distressScore,
       }]);
     } catch {
-      setMsgs(p => [...p, { id: Date.now() + 1, role: 'ai', content: 'मुझे खेद है, अभी कनेक्शन में दिक्कत है। ARDSI: 1800-200-ARDSI' }]);
+      setMsgs(p => [...p, { id: Date.now() + 1, role: 'ai', content: 'मुझे खेद है, अभी कनेक्शन में दिक्कत है।\n\nPlease try again. For urgent help: ARDSI 1800-200-ARDSI' }]);
     } finally { setLoading(false); }
   };
 
@@ -79,107 +117,107 @@ export default function ChatPage() {
   };
   const stopRec = () => { recRef.current?.stop(); setRecording(false); };
 
+  const autoGrow = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(e.target.value);
+    e.target.style.height = '44px';
+    e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+  };
+
   return (
-    <div className="font-ui" style={{ maxWidth: 720, margin: '0 auto', padding: '32px 20px', display: 'flex', flexDirection: 'column', height: 'calc(100vh - 52px - 110px)' }}>
+    <div className="font-ui" style={{
+      maxWidth: 720, margin: '0 auto', padding: '28px 20px',
+      display: 'flex', flexDirection: 'column',
+      height: 'calc(100vh - 54px - 108px)',
+    }}>
 
       {/* Header */}
-      <div style={{ marginBottom: 20, flexShrink: 0 }}>
-        <div style={{ fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'rgba(99,102,241,0.8)', marginBottom: 8, fontWeight: 600 }}>
-          03 / Caregiver Chat
-        </div>
+      <div style={{ marginBottom: 16, flexShrink: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
           <div>
-            <h1 className="font-display" style={{ fontSize: 'clamp(1.6rem, 4vw, 2.4rem)', fontWeight: 400, color: '#fff', letterSpacing: '-0.5px', lineHeight: 1.1 }}>
+            <div className="section-label" style={{ marginBottom: 6 }}>03 / Caregiver Chat</div>
+            <h1 className="font-display" style={{ fontSize: 'clamp(1.6rem, 4vw, 2.4rem)', fontWeight: 300, color: 'var(--c-text-1)', letterSpacing: '-0.8px', lineHeight: 1.1 }}>
               Talk to Sahay
             </h1>
-            <p style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', marginTop: 4 }}>Hindi · Bengali · English — your private care space</p>
+            <p style={{ fontSize: 13, color: 'var(--c-text-3)', marginTop: 5 }}>Hindi · English · your private care space</p>
           </div>
-          {/* Orchestrate toggle */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-            <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.35)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Step Fn</span>
-            <div
-              onClick={() => setOrchestrate(!orchestrate)}
-              style={{
-                width: 36, height: 20, borderRadius: 10,
-                background: orchestrate ? '#6366f1' : 'rgba(255,255,255,0.1)',
-                position: 'relative', cursor: 'pointer', transition: 'background 0.2s',
-              }}
+          {/* Settings toggle */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <button
+              className="btn-icon"
+              onClick={() => setShowSettings(s => !s)}
+              aria-label="Toggle settings"
+              aria-expanded={showSettings}
+              style={{ borderColor: showSettings ? 'var(--c-accent)' : undefined }}
             >
-              <span style={{
-                position: 'absolute', top: 2, left: orchestrate ? 18 : 2,
-                width: 16, height: 16, borderRadius: 8, background: '#fff',
-                transition: 'left 0.2s',
-              }} />
-            </div>
+              <Settings2 size={16} strokeWidth={1.6} />
+            </button>
           </div>
         </div>
+
+        {/* Settings panel */}
+        {showSettings && (
+          <div className="glass-card" style={{ marginTop: 12, padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--c-text-1)' }}>Step Functions Mode</div>
+              <div style={{ fontSize: 12, color: 'var(--c-text-3)', marginTop: 2 }}>Uses multi-agent orchestration (slower, more thorough)</div>
+            </div>
+            <div
+              className={`toggle-track ${orchestrate ? 'on' : ''}`}
+              onClick={() => setOrchestrate(!orchestrate)}
+              role="switch"
+              aria-checked={orchestrate}
+              aria-label="Toggle Step Functions mode"
+              tabIndex={0}
+              onKeyDown={e => { if (e.key === ' ' || e.key === 'Enter') setOrchestrate(!orchestrate); }}
+            >
+              <span className="toggle-thumb" />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Messages */}
       <div style={{
-        flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12,
-        padding: '16px 0', marginBottom: 16,
-        borderTop: '1px solid rgba(255,255,255,0.06)',
-        borderBottom: '1px solid rgba(255,255,255,0.06)',
+        flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 14,
+        padding: '16px 0', marginBottom: 14,
+        borderTop: '1px solid var(--c-border)',
+        borderBottom: '1px solid var(--c-border)',
       }}>
         {msgs.map(m => (
-          <div
-            key={m.id}
-            style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start' }}
-          >
-            <div style={{ maxWidth: '78%' }}>
+          <div key={m.id} style={{ display: 'flex', gap: 10, justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start', alignItems: 'flex-start' }}>
+            {m.role === 'ai' && <SahayAvatar />}
+            <div style={{ maxWidth: '80%' }}>
               <div
-                style={{
-                  padding: '12px 16px',
-                  fontSize: 14, lineHeight: 1.6,
-                  color: 'rgba(255,255,255,0.85)',
-                  whiteSpace: 'pre-wrap',
-                  ...(m.role === 'user'
-                    ? { background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: '12px 12px 3px 12px' }
-                    : { background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.09)', borderRadius: '12px 12px 12px 3px' }
-                  ),
-                }}
+                className={m.role === 'user' ? 'bubble-user' : 'bubble-ai'}
+                style={{ padding: '12px 16px', fontSize: 14, lineHeight: 1.65, color: 'var(--c-text-1)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
               >
                 {m.content}
               </div>
               {m.distressScore !== undefined && m.role === 'ai' && (
-                <div style={{ maxWidth: 220, paddingLeft: 4 }}>
+                <div style={{ maxWidth: 260, paddingLeft: 4 }}>
                   <DistressBar score={m.distressScore} />
                 </div>
+              )}
+              {m.audioUrl && m.role === 'ai' && (
+                <audio src={m.audioUrl} controls style={{ marginTop: 8, width: '100%', height: 32, borderRadius: 4, opacity: 0.8 }} />
               )}
             </div>
           </div>
         ))}
-        {loading && (
-          <div style={{ display: 'flex' }}>
-            <div style={{
-              padding: '12px 16px', fontSize: 14, color: 'rgba(255,255,255,0.4)',
-              background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.09)',
-              borderRadius: '12px 12px 12px 3px',
-            }}>
-              Sahay is thinking…
-            </div>
-          </div>
-        )}
+
+        {loading && <TypingIndicator />}
         <div ref={bottomRef} />
       </div>
 
       {/* Quick prompts */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14, flexShrink: 0 }}>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexShrink: 0, overflowX: 'auto', paddingBottom: 2 }}>
         {EXAMPLES.map(q => (
           <button
             key={q.hi}
             onClick={() => send(q.hi)}
             title={q.en}
-            style={{
-              fontSize: 12, color: 'rgba(255,255,255,0.55)',
-              border: '1px solid rgba(255,255,255,0.1)',
-              padding: '5px 12px', background: 'transparent', cursor: 'pointer',
-              fontFamily: 'Manrope, sans-serif',
-              transition: 'border-color 0.2s, color 0.2s',
-            }}
-            onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(99,102,241,0.4)'; (e.currentTarget as HTMLButtonElement).style.color = '#fff'; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(255,255,255,0.1)'; (e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.55)'; }}
+            className="prompt-chip"
+            style={{ flexShrink: 0 }}
           >
             {q.hi}
           </button>
@@ -187,46 +225,60 @@ export default function ChatPage() {
       </div>
 
       {/* Composer */}
-      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexShrink: 0 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexShrink: 0 }}>
+        {/* Mic */}
         <button
           onClick={recording ? stopRec : startRec}
+          className="btn-icon"
+          aria-label={recording ? 'Stop recording' : 'Start voice recording'}
           style={{
-            width: 44, height: 44, flexShrink: 0,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: recording ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.04)',
-            border: `1px solid ${recording ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.12)'}`,
-            color: recording ? '#ef4444' : 'rgba(255,255,255,0.5)',
-            cursor: 'pointer', transition: 'all 0.2s',
+            background: recording ? 'rgba(248,113,113,0.12)' : undefined,
+            borderColor: recording ? 'rgba(248,113,113,0.4)' : undefined,
+            color: recording ? 'var(--c-red)' : undefined,
+            animation: recording ? 'blinkDot 1.4s step-end infinite' : 'none',
+            flexShrink: 0, alignSelf: 'flex-end',
           }}
         >
-          {recording ? <MicOff size={16} strokeWidth={1.5} /> : <Mic size={16} strokeWidth={1.5} />}
+          {recording ? <MicOff size={16} strokeWidth={1.6} /> : <Mic size={16} strokeWidth={1.6} />}
         </button>
+
+        {/* Input */}
         <textarea
+          ref={textareaRef}
           value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input); } }}
-          placeholder="अपना सवाल यहाँ लिखें… (Type in Hindi or English)"
+          onChange={autoGrow}
+          onKeyDown={e => {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(input); }
+          }}
+          placeholder="अपना सवाल यहाँ लिखें… (Hindi or English)"
           className="input-field"
-          style={{ flex: 1, resize: 'none', minHeight: 44, maxHeight: 120, lineHeight: 1.5 }}
+          style={{ flex: 1, resize: 'none', minHeight: 44, maxHeight: 120, lineHeight: 1.55, overflowY: 'auto' }}
           rows={1}
+          aria-label="Message input"
         />
+
+        {/* Send */}
         <button
           onClick={() => send(input)}
           disabled={loading || !input.trim()}
+          aria-label="Send message"
+          className="btn-icon"
           style={{
-            width: 44, height: 44, flexShrink: 0,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: input.trim() && !loading ? '#6366f1' : 'rgba(255,255,255,0.04)',
-            border: '1px solid transparent',
-            color: '#fff', cursor: input.trim() && !loading ? 'pointer' : 'not-allowed',
-            transition: 'background 0.2s',
+            background: input.trim() && !loading ? 'var(--c-accent)' : undefined,
+            borderColor: input.trim() && !loading ? 'transparent' : undefined,
+            color: input.trim() && !loading ? '#fff' : undefined,
+            cursor: input.trim() && !loading ? 'pointer' : 'not-allowed',
+            opacity: loading ? 0.5 : 1,
+            flexShrink: 0, alignSelf: 'flex-end',
+            boxShadow: input.trim() && !loading ? '0 2px 12px rgba(124,111,250,0.35)' : 'none',
           }}
         >
           <Send size={16} strokeWidth={1.8} />
         </button>
       </div>
-      <p style={{ fontSize: 11, color: 'rgba(255,255,255,0.2)', marginTop: 10, textAlign: 'center' }}>
-        Sahay is not a doctor · For emergencies call 112 · ARDSI: 1800-200-ARDSI
+
+      <p style={{ fontSize: 11, color: 'var(--c-text-4)', marginTop: 8, textAlign: 'center', lineHeight: 1.5 }}>
+        Sahay is not a doctor · Emergencies: 112 · ARDSI: 1800-200-ARDSI
       </p>
     </div>
   );
