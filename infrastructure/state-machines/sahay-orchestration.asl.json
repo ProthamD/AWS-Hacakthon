@@ -1,0 +1,120 @@
+{
+  "Comment": "Sahay Multi-Agent Orchestration — Triage → Care Guidance OR Escalation",
+  "StartAt": "TriageAgent",
+  "States": {
+    "TriageAgent": {
+      "Type": "Task",
+      "Resource": "${TriageAgentFunctionArn}",
+      "ResultPath": "$",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "TriageFallback",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "EscalationDecision"
+    },
+    "TriageFallback": {
+      "Type": "Pass",
+      "Comment": "Triage failed — default to ROUTINE to avoid false escalations from broken triage",
+      "Parameters": {
+        "classification": "ROUTINE",
+        "confidence": 0.5,
+        "reasoning": "Triage failed — using safe fallback",
+        "autoEscalate": false,
+        "requiresHumanReview": true,
+        "caregiverId.$": "$.caregiverId",
+        "message.$": "$.message",
+        "sessionId.$": "$.sessionId",
+        "synthesizeAudio.$": "$.synthesizeAudio"
+      },
+      "Next": "EscalationDecision"
+    },
+    "EscalationDecision": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.autoEscalate",
+          "BooleanEquals": true,
+          "Next": "EscalationAgent"
+        }
+      ],
+      "Default": "CareGuidanceAgent"
+    },
+    "EscalationAgent": {
+      "Type": "Task",
+      "Resource": "${EscalationAgentFunctionArn}",
+      "ResultPath": "$",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException"],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "EscalationFallback",
+          "ResultPath": "$.error"
+        }
+      ],
+      "End": true
+    },
+    "EscalationFallback": {
+      "Type": "Pass",
+      "Comment": "Escalation agent failed — return hardcoded emergency response",
+      "Parameters": {
+        "agentType": "ESCALATION_FALLBACK",
+        "response": "This sounds like an emergency. Please call 112 immediately. ARDSI helpline: 1800-200-ARDSI.",
+        "audioUrl": null,
+        "escalated": true,
+        "alertSent": false,
+        "error": "Escalation agent unavailable — manual action required"
+      },
+      "End": true
+    },
+    "CareGuidanceAgent": {
+      "Type": "Task",
+      "Resource": "${CareGuidanceAgentFunctionArn}",
+      "ResultPath": "$",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException"],
+          "IntervalSeconds": 1,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "CareGuidanceFallback",
+          "ResultPath": "$.error"
+        }
+      ],
+      "End": true
+    },
+    "CareGuidanceFallback": {
+      "Type": "Pass",
+      "Comment": "Care guidance failed — return safe fallback with helpline",
+      "Parameters": {
+        "agentType": "CARE_GUIDANCE_FALLBACK",
+        "response": "मुझे खेद है, मैं अभी आपकी सहायता नहीं कर पा रहा हूँ। कृपया ARDSI हेल्पलाइन 1800-200-ARDSI पर कॉल करें।",
+        "audioUrl": null,
+        "distressScore": 5
+      },
+      "End": true
+    }
+  }
+}
