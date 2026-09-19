@@ -12,6 +12,7 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { API_BASE } from '../App';
 
 /* ── Config ─────────────────────────────────────────── */
@@ -141,6 +142,7 @@ interface ConvMsg { who: 'patient' | 'sahay'; text: string; }
 type StatusType = 'starting' | 'listening' | 'thinking' | 'speaking' | 'error';
 
 export default function PatientPage() {
+  const navigate = useNavigate();
   const [time, setTime] = useState(new Date());
   const [profile, setProfile] = useState<Profile | null>(null);
   const [status, setStatus] = useState<StatusType>('starting');
@@ -707,6 +709,22 @@ Rules you MUST follow:
               {h}
             </span>
           ))}
+          {/* Story time shortcut */}
+          <button
+            onClick={() => navigate('/storytime')}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              fontSize: 11, color: 'var(--c-accent)',
+              border: '1px solid var(--c-accent-dim)',
+              padding: '4px 10px', borderRadius: 9999,
+              letterSpacing: '0.03em',
+              background: 'var(--c-accent-dim)',
+              cursor: 'pointer', fontFamily: 'Manrope',
+            }}
+            aria-label="Show memory stories"
+          >
+            📖 Show me my memories
+          </button>
         </div>
 
         {/* Conversation log */}

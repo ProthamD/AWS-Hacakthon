@@ -8,7 +8,7 @@ import MemoryTheaterPage from './pages/MemoryTheaterPage';
 import PatientPage from './pages/PatientPage';
 import BystanderPage from './pages/BystanderPage';
 
-export const API_BASE = import.meta.env.VITE_API_URL || 'https://rls7o3d7d8.execute-api.ap-south-1.amazonaws.com/prod';
+export const API_BASE = import.meta.env.VITE_API_URL || 'https://m4fcfzmsa7.execute-api.ap-south-1.amazonaws.com/prod/';
 export const DEMO_CAREGIVER_ID = 'demo-caregiver-001';
 
 const NAV_ITEMS = [
