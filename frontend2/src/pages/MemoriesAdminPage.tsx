@@ -17,6 +17,7 @@ function useMemories() {
 export default function MemoriesAdminPage() {
   const { mems, add, remove } = useMemories();
   const [caption, setCaption] = useState('');
+  const [timeFrame, setTimeFrame] = useState('');
   const [preview, setPreview] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -30,9 +31,15 @@ export default function MemoriesAdminPage() {
 
   const handleAdd = () => {
     if (!preview) return;
-    add({ id: Date.now().toString(), url: preview, caption: caption.trim() || 'A cherished memory', date: new Date().toLocaleDateString() });
+    add({ 
+      id: Date.now().toString(), 
+      url: preview, 
+      caption: caption.trim() || 'A cherished memory', 
+      date: timeFrame.trim() || new Date().getFullYear().toString() 
+    });
     setPreview(null);
     setCaption('');
+    setTimeFrame('');
     if (fileRef.current) fileRef.current.value = '';
   };
 
@@ -98,10 +105,17 @@ export default function MemoriesAdminPage() {
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <input
             className="input-field"
-            style={{ flex: 1 }}
+            style={{ flex: 2 }}
             value={caption}
             onChange={e => setCaption(e.target.value)}
-            placeholder="Caption (e.g. 'Our trip to Rishikesh, 2018')"
+            placeholder="Caption (e.g. 'Our trip to Rishikesh')"
+          />
+          <input
+            className="input-field"
+            style={{ flex: 1 }}
+            value={timeFrame}
+            onChange={e => setTimeFrame(e.target.value)}
+            placeholder="Year/Time (e.g. '2018')"
           />
           <button
             onClick={handleAdd}

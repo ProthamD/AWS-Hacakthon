@@ -23,11 +23,16 @@ export default function MemoryTheaterPage() {
   // Narrate caption with TTS
   useEffect(() => {
     if (!mems[idx]) return;
-    const text = mems[idx].caption;
+    const { caption: text, date } = mems[idx];
     setCaption(text);
     if (!window.speechSynthesis) return;
     window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(`This photo shows: ${text}. You are loved and safe.`);
+    
+    // Include time frame if it exists and is not just the current date
+    const timeContext = date && date.length > 4 ? ` from ${date}` : '';
+    const utteranceText = `This photo${timeContext} shows: ${text}. You are loved and safe.`;
+    
+    const u = new SpeechSynthesisUtterance(utteranceText);
     u.lang = 'en-IN'; u.rate = 0.78; u.pitch = 1.05; u.volume = 1.0;
     const voices = window.speechSynthesis.getVoices();
     const v = voices.find(v => v.lang.startsWith('en-IN')) || voices.find(v => v.lang.startsWith('en'));

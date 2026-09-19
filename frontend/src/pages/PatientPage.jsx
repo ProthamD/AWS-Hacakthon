@@ -441,102 +441,278 @@ export default function PatientPage() {
     await speak(msg);
   };
 
-  const name = profile?.patientName || "—";
+  const name = profile?.patientName || '—';
 
-  const orbClass = "zen__orb" + (
-    alertSent ? " zen__orb--alert"
-    : isSpeaking ? " zen__orb--speaking"
-    : status === "listening" ? " zen__orb--listening"
-    : ""
-  );
+  const orbGradient =
+    alertSent ? 'linear-gradient(135deg, #f87171, #ef4444)'
+    : isSpeaking ? 'linear-gradient(135deg, #f59e0b, #d97706)'
+    : 'linear-gradient(135deg, #7c6ffa, #4ade80, #38bdf8)';
 
-  const statusText =
-    status === "listening" ? "Listening" :
-    status === "transcribing" ? "Understanding…" :
-    status === "thinking" ? "Thinking…" :
-    status === "speaking" ? "Speaking" :
-    status === "starting" ? "Starting…" :
-    status === "error" ? "Allow microphone access" : "";
+  const orbClass =
+    alertSent ? 'orb-deepgram alert'
+    : isSpeaking ? 'orb-deepgram speaking'
+    : 'orb-deepgram';
 
-  const statusCls = "zen__status" + (
-    status === "listening" ? " zen__status--active" :
-    status === "speaking" ? " zen__status--speaking" : ""
-  );
+  const statusLabel =
+    status === 'listening' ? 'Listening'
+    : status === 'transcribing' ? 'Understanding…'
+    : status === 'thinking' ? 'Thinking…'
+    : status === 'speaking' ? 'Speaking'
+    : status === 'starting' ? 'Starting…'
+    : status === 'error' ? 'Allow microphone access' : '';
+
+  const statusColor =
+    status === 'listening' ? 'rgba(124,111,250,0.8)'
+    : status === 'transcribing' ? 'rgba(155,143,252,0.9)'
+    : status === 'thinking' ? 'rgba(155,143,252,0.9)'
+    : status === 'speaking' ? '#f59e0b'
+    : status === 'error' ? '#f87171'
+    : 'rgba(255,255,255,0.2)';
+
+  const statusDot =
+    status === 'listening' ? '#4ade80'
+    : status === 'transcribing' ? '#7c6ffa'
+    : status === 'thinking' ? '#7c6ffa'
+    : status === 'speaking' ? '#f59e0b'
+    : status === 'error' ? '#f87171'
+    : 'rgba(255,255,255,0.2)';
 
   return (
-    <div className="zen">
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"1.25rem 1.5rem", flexShrink:0 }}>
-        <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:"0.65rem", letterSpacing:"0.15em", textTransform:"uppercase", color:"rgba(237,232,227,0.2)" }}>SAHAY</div>
-        <div style={{ display:"flex", gap:"0.5rem", alignItems:"center" }}>
-          {DEEPGRAM_KEY
-            ? <span className="badge badge--mint">◉ Deepgram Live</span>
-            : <span className="badge badge--signal">⚡ Groq Fallback</span>
-          }
-          {aiMode === "ai" && <span className="badge badge--muted">AI</span>}
+    <div
+      className="font-ui"
+      style={{
+        minHeight: '100vh', width: '100%',
+        background: 'radial-gradient(ellipse at 50% 30%, var(--c-accent-dim) 0%, var(--c-bg) 60%)',
+        display: 'flex', flexDirection: 'column',
+        overflow: 'hidden',
+      }}
+    >
+      {/* ── Top bar ─────────────────────────────── */}
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        padding: '14px 20px', flexShrink: 0,
+        borderBottom: '1px solid var(--c-border)',
+      }}>
+        <span style={{ fontSize: 11, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--c-text-4)', fontFamily: 'Manrope', fontWeight: 700 }}>
+          SAHAY
+        </span>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5,
+            fontSize: 9, letterSpacing: '0.08em', textTransform: 'uppercase',
+            background: DEEPGRAM_KEY ? 'rgba(74,222,128,0.1)' : 'rgba(124,111,250,0.1)',
+            border: `1px solid ${DEEPGRAM_KEY ? 'rgba(74,222,128,0.25)' : 'rgba(124,111,250,0.25)'}`,
+            color: DEEPGRAM_KEY ? 'rgba(74,222,128,0.9)' : 'rgba(155,143,252,0.9)',
+            padding: '4px 10px', borderRadius: 9999, fontWeight: 700,
+          }}>
+            <span style={{ width: 5, height: 5, borderRadius: '50%', background: DEEPGRAM_KEY ? '#4ade80' : '#7c6ffa', animation: 'blinkDot 1.4s step-end infinite', display: 'inline-block' }} />
+            {DEEPGRAM_KEY ? 'Deepgram Live' : 'Groq Whisper'}
+          </span>
+          {aiMode === "ai" && <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5,
+            fontSize: 9, letterSpacing: '0.08em', textTransform: 'uppercase',
+            background: 'rgba(255,255,255,0.05)',
+            border: `1px solid rgba(255,255,255,0.1)`,
+            color: 'rgba(255,255,255,0.5)',
+            padding: '4px 10px', borderRadius: 9999, fontWeight: 700,
+          }}>AI</span>}
         </div>
       </div>
-      <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"1rem", gap:"1.5rem" }}>
-        <div className="zen__date">
-          {time.toLocaleDateString([], { weekday:"long", month:"long", day:"numeric" })}
+
+      {/* ── Center ──────────────────────────────── */}
+      <div style={{
+        flex: 1, display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        padding: '20px', gap: 20, overflowY: 'auto',
+      }}>
+
+        {/* Date */}
+        <div style={{ fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.2)' }}>
+          {time.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })}
         </div>
-        <div className="zen__name">{name}</div>
-        <div className="zen__clock">
-          {time.toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" })}
+
+        {/* Name */}
+        <div
+          className="font-display"
+          style={{
+            fontSize: 'clamp(3.5rem, 16vw, 9rem)',
+            fontWeight: 400,
+            letterSpacing: '-2px',
+            lineHeight: 0.95,
+            color: 'var(--c-text-1)',
+            textAlign: 'center',
+          }}
+        >
+          {name}
         </div>
-        <div className={orbClass} />
-        <div className={statusCls}>{statusText}</div>
-        {lastHeard && status !== "listening" && (
-          <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:"0.7rem", color:"rgba(237,232,227,0.25)", letterSpacing:"0.04em" }}>
+
+        {/* Clock */}
+        <div
+          className="font-display"
+          style={{ fontSize: 'clamp(1.4rem, 4vw, 2.2rem)', fontWeight: 300, color: 'var(--c-text-4)', letterSpacing: '0.05em' }}
+        >
+          {time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        </div>
+
+
+        {/* Orb — Deepgram Voice Agent Design */}
+        <div style={{ position: 'relative', width: 140, height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div
+            className={orbClass}
+            style={{
+              width: '100%', height: '100%',
+              background: `linear-gradient(var(--c-surface), var(--c-surface)) padding-box, ${orbGradient} border-box`,
+              border: '3px solid transparent',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          />
+        </div>
+
+        {/* Status badge */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+          <span style={{ width: 6, height: 6, borderRadius: '50%', background: statusDot, display: 'inline-block', animation: 'blinkDot 1.4s step-end infinite' }} />
+          <span style={{ fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: statusColor, fontWeight: 700 }}>{statusLabel}</span>
+        </div>
+
+        {/* Last heard */}
+        {lastHeard && status !== 'listening' && (
+          <div style={{ fontSize: 12, color: 'var(--c-text-3)', fontStyle: 'italic', maxWidth: 340, textAlign: 'center' }}>
             "{lastHeard}"
           </div>
         )}
+
+        {/* Sahay reply bubble */}
         {isSpeaking && lastSpoken && (
-          <div className="zen__bubble">"{lastSpoken}"</div>
+          <div
+            className="font-display"
+            style={{
+              fontSize: 'clamp(1rem, 2vw, 1.25rem)',
+              fontStyle: 'italic',
+              color: 'var(--c-text-2)',
+              textAlign: 'center',
+              maxWidth: 400,
+              lineHeight: 1.55,
+              padding: '16px 20px',
+              border: '1px solid var(--c-border)',
+              background: 'var(--c-surface-2)',
+            }}
+          >
+            "{lastSpoken}"
+          </div>
         )}
+
+        {/* Alert badge */}
         {alertSent && (
-          <span className="badge badge--mint" style={{ fontSize:"0.75rem", padding:"0.4rem 1rem" }}>
-            ✓ {profile?.emergencyContactName || "Caregiver"} alerted — on their way
-          </span>
+          <div style={{
+            fontSize: 12, letterSpacing: '0.06em',
+            color: 'rgba(74,222,128,0.9)',
+            border: '1px solid rgba(74,222,128,0.3)',
+            padding: '6px 14px',
+          }}>
+            ✓ {profile?.emergencyContactName || 'Caregiver'} alerted — help is on the way
+          </div>
         )}
+
+        {/* Map */}
         {showMap && profile?.homeAddress && (
-          <div className="zen__map">
-            <div style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:"0.65rem", letterSpacing:"0.1em", textTransform:"uppercase", color:"var(--mint)", marginBottom:"0.75rem" }}>
-              ◈ Route to Safe Destination
+          <div style={{
+            width: '100%', maxWidth: 400,
+            border: '1px solid rgba(255,255,255,0.08)',
+            background: 'rgba(255,255,255,0.025)',
+            padding: 16,
+          }}>
+            <div style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(74,222,128,0.7)', marginBottom: 10 }}>
+              ◈ Route to safe destination
             </div>
-            <div style={{ fontSize:"0.8rem", color:"rgba(237,232,227,0.4)", marginBottom:"0.75rem" }}>{profile.homeAddress}</div>
-            <iframe width="100%" height="160" frameBorder="0"
-              style={{ border:0, borderRadius:10, marginBottom:"0.75rem", display:"block", opacity:0.9 }}
+            <iframe
+              width="100%" height="150" frameBorder="0"
+              style={{ border: 0, display: 'block', marginBottom: 10, opacity: 0.85 }}
               src={`https://maps.google.com/maps?q=${encodeURIComponent(profile.homeAddress)}&output=embed`}
-              allowFullScreen />
-            <a href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(profile.homeAddress)}${currentLocation ? `&origin=${currentLocation.lat},${currentLocation.lng}` : ""}`}
+              allowFullScreen
+            />
+            <a
+              href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(profile.homeAddress)}${currentLocation ? `&origin=${currentLocation.lat},${currentLocation.lng}` : ''}`}
               target="_blank" rel="noreferrer"
-              style={{ display:"block", textAlign:"center", padding:"0.75rem", background:"rgba(0,229,181,0.1)", border:"1px solid rgba(0,229,181,0.25)", borderRadius:10, color:"var(--mint)", fontSize:"0.85rem", fontFamily:"'Syne',sans-serif", fontWeight:700, letterSpacing:"0.04em", textDecoration:"none" }}>
-              ▶ Open Turn-by-Turn Directions
+              style={{
+                display: 'block', textAlign: 'center', padding: '10px',
+                background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.2)',
+                color: 'rgba(74,222,128,0.9)', fontSize: 13, fontWeight: 600,
+                letterSpacing: '0.04em', textDecoration: 'none',
+                fontFamily: 'Manrope, sans-serif',
+              }}
+            >
+              ▶ Open directions
             </a>
           </div>
         )}
-        <div style={{ textAlign:"center" }}>
-          {['"What is my name?"','"Show me the route"','"I am lost"','"I need help"'].map(h => (
-            <span key={h} className="zen__hint">{h}</span>
+
+        {/* Hint chips — what the patient can say */}
+        <div style={{ textAlign: 'center', maxWidth: 400, display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center' }}>
+          {['"What is my name?"', '"Show me the route"', '"I am lost"', '"I need help"'].map(h => (
+            <span
+              key={h}
+              style={{
+                display: 'inline-block',
+                fontSize: 11, color: 'var(--c-text-3)',
+                border: '1px solid var(--c-border)',
+                padding: '4px 10px', borderRadius: 9999,
+                letterSpacing: '0.03em',
+                background: 'var(--c-interactive)',
+              }}
+            >
+              {h}
+            </span>
           ))}
         </div>
+
+        {/* Memory Theater link if memories exist */}
         {(() => {
           try {
             const mems = JSON.parse(localStorage.getItem("sahay_memories") || "[]");
             if (mems.length > 0) return (
-              <a href="/memories/theater" style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:"0.7rem", color:"rgba(237,232,227,0.25)", letterSpacing:"0.1em", textTransform:"uppercase", textDecoration:"none" }}>
+              <a href="/memories/theater" style={{ fontFamily:"'JetBrains Mono',monospace", fontSize:"0.7rem", color:"rgba(237,232,227,0.45)", letterSpacing:"0.1em", textTransform:"uppercase", textDecoration:"none", marginTop: 8 }}>
                 ❐ Watch Memories
               </a>
             );
           } catch {}
           return null;
         })()}
+
+        {/* Conversation log */}
         {conversationLog.length > 0 && (
-          <div className="zen__log">
-            {conversationLog.slice(-4).map((entry, i) => (
-              <div key={i} className={`zen__msg zen__msg--${entry.who === "patient" ? "patient" : "ai"}`}>
-                <div className="zen__msg__bubble">
-                  <span className="zen__msg__who">{entry.who === "patient" ? "You" : "Sahay"}</span>
+          <div style={{ width: '100%', maxWidth: 400, display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+            {conversationLog.slice(-5).map((entry, i) => (
+              <div
+                key={i}
+                style={{
+                  display: 'flex',
+                  justifyContent: entry.who === 'patient' ? 'flex-end' : 'flex-start',
+                }}
+              >
+                <div
+                  style={{
+                    maxWidth: '80%',
+                    padding: '9px 14px',
+                    fontSize: 13,
+                    lineHeight: 1.5,
+                    color: 'var(--c-text-2)',
+                    ...(entry.who === 'patient'
+                      ? {
+                          background: 'var(--c-accent-dim)',
+                          border: '1px solid rgba(217,98,42,0.25)',
+                          borderRadius: '12px 12px 3px 12px',
+                        }
+                      : {
+                          background: 'var(--c-surface-2)',
+                          border: '1px solid var(--c-border)',
+                          borderRadius: '12px 12px 12px 3px',
+                        }
+                    ),
+                  }}
+                >
+                  <div style={{ fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--c-text-4)', marginBottom: 4 }}>
+                    {entry.who === 'patient' ? 'You' : 'Sahay'}
+                  </div>
                   {entry.text}
                 </div>
               </div>
@@ -544,10 +720,30 @@ export default function PatientPage() {
           </div>
         )}
       </div>
-      <div style={{ padding:"1rem 1.5rem 2.5rem", display:"flex", justifyContent:"center", flexShrink:0 }}>
-        <button onClick={handleManualPanic} className="zen__panic">
-          <span style={{ fontSize:"1.4rem" }}>🆘</span>
-          I Need Help — Call {profile?.emergencyContactName || "Caregiver"}
+
+      {/* ── Panic button ─────────────────────────── */}
+      <div style={{ padding: '12px 20px 32px', display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
+        <button
+          onClick={handleManualPanic}
+          style={{
+            width: '100%', maxWidth: 400,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14,
+            padding: '18px 24px',
+            background: 'rgba(192,57,43,0.10)',
+            border: '1px solid rgba(192,57,43,0.35)',
+            color: 'var(--c-text-1)',
+            fontSize: 15, fontWeight: 600,
+            letterSpacing: '0.02em',
+            cursor: 'pointer',
+            fontFamily: 'Manrope, sans-serif',
+            borderRadius: 12,
+            transition: 'background 0.2s, border-color 0.2s',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(192,57,43,0.20)'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(192,57,43,0.10)'; }}
+        >
+          <span style={{ fontSize: 22 }}>🆘</span>
+          I Need Help — Call {profile?.emergencyContactName || 'Caregiver'}
         </button>
       </div>
     </div>

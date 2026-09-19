@@ -818,3 +818,46 @@ img, svg { display: block; max-width: 100%; }
   .chat-composer > div { gap: 0.45rem !important; }
   .chat-composer .btn { padding: 0.75rem 0.9rem !important; }
 }
+/* ===== FRONTEND 2 PATIENT PAGE TOKENS ===== */
+:root {
+  --c-bg: #110d08;
+  --c-surface: #1c160f;
+  --c-surface-2: #261e14;
+  --c-surface-3: #30261a;
+  --c-border: #ffdcb412;
+  --c-border-hi: #ffdcb424;
+  --c-accent: #e8784a;
+  --c-accent-dim: #e8784a24;
+  --c-accent-glow: #e8784a47;
+  --c-accent-2: #f09060;
+  --c-calm: #4ade80;
+  --c-amber: #f59e0b;
+  --c-red: #f87171;
+  --c-gold: #d4a853;
+  --c-text-1: #f5ede2;
+  --c-text-2: #f5ede294;
+  --c-text-3: #f5ede252;
+  --c-text-4: #f5ede229;
+  --c-interactive: #ffdcb40f;
+  --c-interactive-hover: #ffdcb41a;
+}
+.orb-deepgram {
+  border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%;
+  transition: box-shadow 0.6s;
+  animation: morphSpin 8s linear infinite;
+}
+.orb-deepgram.speaking {
+  animation: morphSpin 3s linear infinite;
+}
+.orb-deepgram.alert {
+  animation: morphSpin 1.5s linear infinite;
+}
+@keyframes morphSpin {
+  0% { border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%; transform: rotate(0deg); }
+  50% { border-radius: 30% 60% 70% 40% / 50% 60% 30% 60%; transform: rotate(180deg); }
+  100% { border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%; transform: rotate(360deg); }
+}
+@keyframes blinkDot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
