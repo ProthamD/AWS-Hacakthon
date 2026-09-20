@@ -354,20 +354,28 @@ export default function OnboardPage() {
         {/* ── Emergency contact ── */}
         <div style={sectionStyle}>🚨 Emergency Contact</div>
 
-        {(['emergencyContactName','emergencyContactPhone'] as const).map(k => (
-          <div key={k}>
-            <label style={labelStyle}>{k === 'emergencyContactName' ? 'Caregiver Name' : 'Caregiver Phone (with +91)'}</label>
-            <input className="input-field" type={k === 'emergencyContactPhone' ? 'tel' : 'text'} value={form[k]} onChange={e => set(k, e.target.value)}
-              placeholder={k === 'emergencyContactName' ? 'e.g. Priya Sharma' : '+91 98765 43210'} />
-          </div>
-        ))}
+        <div>
+          <label style={labelStyle}>Caregiver Name</label>
+          <input className="input-field" type="text"
+            value={form.emergencyContactName ?? ''}
+            onChange={e => set('emergencyContactName', e.target.value)}
+            placeholder="e.g. Priya Sharma" />
+        </div>
+
+        <div>
+          <label style={labelStyle}>Caregiver Phone (with +91)</label>
+          <input className="input-field" type="tel"
+            value={form.emergencyContactPhone ?? ''}
+            onChange={e => set('emergencyContactPhone', e.target.value)}
+            placeholder="+91 98765 43210" />
+        </div>
 
         <div>
           <label style={labelStyle}>📧 Caregiver Email (for alerts)</label>
           <input
             className="input-field"
             type="email"
-            value={form.caregiverEmail}
+            value={form.caregiverEmail ?? ''}
             onChange={e => set('caregiverEmail', e.target.value)}
             placeholder="e.g. priya.sharma@gmail.com"
           />
@@ -375,6 +383,7 @@ export default function OnboardPage() {
             Sahay will email this address when distress is detected. Alerts are rate-limited to once every 30 minutes.
           </div>
         </div>
+
 
         {/* ── Location & Routing ── */}
         <div style={sectionStyle}>🗺️ Locations & Routing</div>
