@@ -9,6 +9,7 @@ interface Profile {
   scheduledDestination: string; destinationLat: string; destinationLng: string;
   destinationPriority: 'normal' | 'high';
   emergencyContactName: string; emergencyContactPhone: string;
+  caregiverEmail: string;
   patientLanguage: string; memories: string;
   dailyRoutine: string; keyRelationships: string; likesAndDislikes: string;
   dementiaStage: string;
@@ -20,6 +21,7 @@ const EMPTY: Profile = {
   scheduledDestination:'', destinationLat:'', destinationLng:'',
   destinationPriority:'normal',
   emergencyContactName:'', emergencyContactPhone:'',
+  caregiverEmail:'',
   patientLanguage:'English', memories:'',
   dailyRoutine:'', keyRelationships:'', likesAndDislikes:'',
   dementiaStage:'moderate',
@@ -359,6 +361,20 @@ export default function OnboardPage() {
               placeholder={k === 'emergencyContactName' ? 'e.g. Priya Sharma' : '+91 98765 43210'} />
           </div>
         ))}
+
+        <div>
+          <label style={labelStyle}>📧 Caregiver Email (for alerts)</label>
+          <input
+            className="input-field"
+            type="email"
+            value={form.caregiverEmail}
+            onChange={e => set('caregiverEmail', e.target.value)}
+            placeholder="e.g. priya.sharma@gmail.com"
+          />
+          <div style={{ fontSize:11, color:'rgba(255,255,255,0.25)', marginTop:6, lineHeight:1.6 }}>
+            Sahay will email this address when distress is detected. Alerts are rate-limited to once every 30 minutes.
+          </div>
+        </div>
 
         {/* ── Location & Routing ── */}
         <div style={sectionStyle}>🗺️ Locations & Routing</div>

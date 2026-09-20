@@ -15,10 +15,12 @@ import { useNavigate } from 'react-router-dom';
 import { API_BASE } from '../App';
 
 /* ─── Config ─────────────────────────────────────────── */
-const DEEPGRAM_KEY      = import.meta.env.VITE_DEEPGRAM_KEY || '';
-const GOOGLE_MAPS_KEY   = import.meta.env.VITE_GOOGLE_MAPS_KEY || '';
-const BUFFER_SECS       = 20;
-const MAX_RETRIES       = 2;
+// NOTE: DEEPGRAM_KEY is fetched from backend at runtime (not baked into bundle)
+const GOOGLE_MAPS_KEY        = import.meta.env.VITE_GOOGLE_MAPS_KEY || '';
+const BUFFER_SECS            = 20;
+const MAX_RETRIES            = 2;
+const ALERT_TTL_MS           = 30 * 60 * 1000;  // 30 minutes client-side guard
+const PROCESSING_TIMEOUT_MS  = 15_000;           // reset processingRef after 15s max
 
 const MIME = (typeof MediaRecorder !== 'undefined' &&
   MediaRecorder.isTypeSupported('audio/webm;codecs=opus'))
@@ -99,6 +101,7 @@ interface Profile {
   homeAddress?: string;
   homeLat?: string;
   homeLng?: string;
+  caregiverEmail?: string;
   scheduledDestination?: string;
   destinationLat?: string;
   destinationLng?: string;
@@ -162,6 +165,7 @@ export default function PatientPage() {
   const [lastHeard,  setLastHeard]  = useState('');
   const [lastSpoken, setLastSpoken] = useState('');
   const [alertSent,  setAlertSent]  = useState(false);
+  const [alertMsg,   setAlertMsg]   = useState('');   // suppressed message for UI
   const [log,        setLog]        = useState<ConvMsg[]>([]);
   const [speaking,   setSpeaking]   = useState(false);
   const [showMap,    setShowMap]    = useState(false);
@@ -171,24 +175,27 @@ export default function PatientPage() {
   const [dgStatus,   setDgStatus]   = useState<'off'|'connecting'|'live'|'fallback'>('off');
   const [debugMsg,   setDebugMsg]   = useState('');
   const [pttActive,  setPttActive]  = useState(false);
+  const [dgKey,      setDgKey]      = useState('');  // fetched from backend
 
   /* ─── Refs ───────────────────────────────────────── */
-  const profileRef    = useRef<Profile | null>(null);
-  const alertRef      = useRef(false);
-  const speakingRef   = useRef(false);
-  const speakEndRef   = useRef(0);
-  const processingRef = useRef(false);
-  const sessionRef    = useRef<{ role: string; content: string }[]>([]);
-  const mountedRef    = useRef(true);
-  const streamRef     = useRef<MediaStream | null>(null);
-  const audioCtxRef   = useRef<AudioContext | null>(null);
-  const dgSocketRef   = useRef<WebSocket | null>(null);
-  const dgRecRef      = useRef<MediaRecorder | null>(null);
-  const usingDGRef    = useRef(false);
-  const bufferRef     = useRef<Blob[]>([]);
-  const bufferTsRef   = useRef<number[]>([]);
-  const pttRecRef     = useRef<MediaRecorder | null>(null);
-  const pttChunksRef  = useRef<Blob[]>([]);
+  const profileRef        = useRef<Profile | null>(null);
+  const alertLastSentRef  = useRef(0);             // timestamp of last alert sent (30-min TTL)
+  const speakingRef       = useRef(false);
+  const speakEndRef       = useRef(0);
+  const processingRef     = useRef(false);
+  const processingTORef   = useRef<ReturnType<typeof setTimeout> | null>(null); // P99 timeout
+  const sessionRef        = useRef<{ role: string; content: string }[]>([]);
+  const mountedRef        = useRef(true);
+  const streamRef         = useRef<MediaStream | null>(null);
+  const audioCtxRef       = useRef<AudioContext | null>(null);
+  const dgSocketRef       = useRef<WebSocket | null>(null);
+  const dgRecRef          = useRef<MediaRecorder | null>(null);
+  const usingDGRef        = useRef(false);
+  const dgReconnectRef    = useRef(0);             // reconnect attempt counter
+  const bufferRef         = useRef<Blob[]>([]);
+  const bufferTsRef       = useRef<number[]>([]);
+  const pttRecRef         = useRef<MediaRecorder | null>(null);
+  const pttChunksRef      = useRef<Blob[]>([]);
 
   useEffect(() => { profileRef.current = profile; }, [profile]);
 
@@ -214,19 +221,33 @@ export default function PatientPage() {
     }
   }, []);
 
-  /* boot */
+  /* boot — fetch Deepgram key from backend, then init mic */
   useEffect(() => {
     mountedRef.current = true;
-    initMic();
+    // Fetch Deepgram key from backend (not from bundle env var)
+    fetch(`${API_BASE}/patient/deepgram-token`, { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.key && mountedRef.current) setDgKey(d.key); })
+      .catch(() => { /* non-fatal — will fall back to PTT mode */ })
+      .finally(() => initMic());
     return () => {
       mountedRef.current = false;
       streamRef.current?.getTracks().forEach(t => t.stop());
       audioCtxRef.current?.close().catch(() => {});
       window.speechSynthesis?.cancel();
+      if (processingTORef.current) clearTimeout(processingTORef.current);
       try { dgSocketRef.current?.close(); } catch { /* ok */ }
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Open Deepgram when key arrives (may come after mic init)
+  useEffect(() => {
+    if (dgKey && streamRef.current && dgStatus === 'off') {
+      openDeepgram(streamRef.current, dgKey);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dgKey]);
 
   /* ── Init microphone ──────────────────────────────── */
   const initMic = useCallback(async () => {
@@ -240,18 +261,19 @@ export default function PatientPage() {
       audioCtxRef.current = ctx;
       if (!mountedRef.current) return;
       setStatus('listening');
-      setDebugMsg('Mic ready — hold the 🎤 button to speak');
-      if (DEEPGRAM_KEY) openDeepgram(stream);
-      else { setDgStatus('fallback'); setDebugMsg('Hold the 🎤 button to speak (Groq Whisper mode)'); }
+      // dgKey may not be fetched yet — useEffect above will open Deepgram once key arrives
+      setDebugMsg(dgKey ? 'Deepgram connecting…' : 'Hold the 🎤 button to speak (Groq Whisper mode)');
+      if (!dgKey) setDgStatus('fallback');
     } catch (err) {
       console.error('[Sahay] Mic error:', err);
       if (mountedRef.current) { setStatus('error'); setDebugMsg('Microphone access denied. Tap the orb to retry.'); }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [dgKey]);
 
-  /* ── Deepgram always-on ───────────────────────────── */
-  const openDeepgram = useCallback((stream: MediaStream) => {
+  /* ── Deepgram always-on (with exponential backoff reconnect) ─── */
+  const openDeepgram = useCallback((stream: MediaStream, key: string) => {
+    if (!key) return;
     setDgStatus('connecting');
     const url = [
       'wss://api.deepgram.com/v1/listen',
@@ -262,13 +284,14 @@ export default function PatientPage() {
       '&utterance_end_ms=1200',
       '&vad_events=true',
     ].join('');
-    const socket = new WebSocket(url, ['token', DEEPGRAM_KEY]);
+    const socket = new WebSocket(url, ['token', key]);
     dgSocketRef.current = socket;
     const rec = new MediaRecorder(stream, { mimeType: MIME });
     dgRecRef.current = rec;
 
     socket.onopen = () => {
       console.log('[Sahay] Deepgram open');
+      dgReconnectRef.current = 0; // reset backoff on success
       setDgStatus('live');
       usingDGRef.current = true;
       setDebugMsg('Deepgram live — say a wake phrase or hold 🎤 to speak freely');
@@ -306,11 +329,18 @@ export default function PatientPage() {
       console.warn('[Sahay] Deepgram closed', evt.code);
       usingDGRef.current = false;
       setDgStatus('fallback');
-      setDebugMsg('Deepgram disconnected — use hold-to-talk button');
       try { rec.stop(); } catch { /* ok */ }
+      // Exponential backoff reconnect (max 30s)
+      if (!mountedRef.current) return;
+      const attempt = dgReconnectRef.current++;
+      const delay = Math.min(1000 * Math.pow(2, attempt), 30_000);
+      setDebugMsg(`Deepgram disconnected — reconnecting in ${Math.round(delay/1000)}s…`);
+      setTimeout(() => {
+        if (mountedRef.current && streamRef.current) openDeepgram(streamRef.current, key);
+      }, delay);
     };
 
-    socket.onerror = () => { /* onclose will fire */ };
+    socket.onerror = () => { /* onclose will fire with reconnect */ };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -385,6 +415,63 @@ export default function PatientPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /* ── Caregiver email alert (30-min client TTL guard) ─── */
+  const sendCaregiverAlert = useCallback(async (
+    transcript: string,
+    distressScore: number,
+    alertType: 'DISTRESS' | 'PANIC' | 'EMERGENCY' = 'DISTRESS',
+  ) => {
+    const now = Date.now();
+    if (now - alertLastSentRef.current < ALERT_TTL_MS) {
+      const minsLeft = Math.ceil((ALERT_TTL_MS - (now - alertLastSentRef.current)) / 60_000);
+      setAlertMsg(`Caregiver was recently alerted — next alert in ${minsLeft} min`);
+      return;
+    }
+    const p = profileRef.current;
+    const email = p?.caregiverEmail || '';
+    if (!email) { setAlertMsg('No caregiver email set — go to Setup'); return; }
+    alertLastSentRef.current = now;
+    setAlertSent(true);
+    // Fire-and-forget with retry
+    const send = async (attempt = 0): Promise<void> => {
+      try {
+        const res = await fetch(`${API_BASE}/patient/alert`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            caregiverId: p?.patientName || 'unknown',
+            caregiverEmail: email,
+            patientName: p?.patientName || 'Patient',
+            message: transcript,
+            alertType,
+            distressScore,
+          }),
+        });
+        if (res.ok) {
+          const d = await res.json();
+          if (d.suppressed) {
+            const minsLeft = Math.ceil((d.nextAlertInSeconds || 1800) / 60);
+            setAlertMsg(`Caregiver was already alerted — next alert in ${minsLeft} min`);
+          } else {
+            setAlertMsg(`✓ ${p?.emergencyContactName || 'Caregiver'} alerted by email`);
+          }
+        } else if (attempt < 2) {
+          await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
+          return send(attempt + 1);
+        }
+      } catch {
+        if (attempt < 2) {
+          await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
+          return send(attempt + 1);
+        }
+        setAlertMsg('Alert delivery failed — please call caregiver directly');
+      }
+    };
+    void send();
+    void uploadDistressClip(transcript);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   /* ── Core speech handler ─────────────────────────── */
   const handleSpeech = useCallback(async (
     transcript: string,
@@ -398,15 +485,21 @@ export default function PatientPage() {
     if (processingRef.current) return;
     processingRef.current = true;
 
+    // P99 safety: auto-reset processingRef after PROCESSING_TIMEOUT_MS (prevents stuck state)
+    if (processingTORef.current) clearTimeout(processingTORef.current);
+    processingTORef.current = setTimeout(() => {
+      processingRef.current = false;
+      if (mountedRef.current) setStatus('listening');
+      console.warn('[Sahay] processingRef auto-reset after timeout');
+    }, PROCESSING_TIMEOUT_MS);
+
     setLastHeard(transcript);
     setLog(prev => [...prev.slice(-9), { who: 'patient', text: transcript }]);
     setStatus('thinking');
 
     // Immediate auto-alert on severe distress — no LLM wait
-    if (isHighDistress(transcript) && !alertRef.current) {
-      alertRef.current = true;
-      setAlertSent(true);
-      void uploadDistressClip(transcript);
+    if (isHighDistress(transcript)) {
+      void sendCaregiverAlert(transcript, 9, 'EMERGENCY');
     }
 
     let responseText  = '';
@@ -503,18 +596,20 @@ export default function PatientPage() {
     }
 
     if (mountedRef.current) setLog(prev => [...prev.slice(-9), { who: 'sahay', text: responseText }]);
-    if (shouldAlert && !alertRef.current) {
-      alertRef.current = true; setAlertSent(true);
-      void uploadDistressClip(transcript);
+    if (shouldAlert) {
+      // Use the distress score from AI response for alert severity
+      const score = (responseText.length > 0) ? 7 : 8; // conservative default
+      void sendCaregiverAlert(transcript, score, 'DISTRESS');
     }
 
     setDebugMsg(`Saying: "${responseText.slice(0, 50)}…"`);
+    if (processingTORef.current) clearTimeout(processingTORef.current);
     await speak(responseText, audioBase64);
     setDebugMsg('Listening again');
     if (mountedRef.current) setStatus('listening');
     processingRef.current = false;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [sendCaregiverAlert]);
 
   /* ── TTS — Polly mp3 preferred, browser TTS fallback ─── */
   const speak = useCallback((text: string, audioBase64?: string | null): Promise<void> => {
@@ -578,9 +673,9 @@ export default function PatientPage() {
   const handlePanic = useCallback(async () => {
     const p = profileRef.current || {};
     const msg = `${p.patientName || 'Dear'}, you are safe. I am alerting ${p.emergencyContactName || 'your caregiver'} right now. Please stay where you are.`;
-    if (!alertRef.current) { alertRef.current = true; setAlertSent(true); void uploadDistressClip('manual'); }
+    void sendCaregiverAlert('Manual SOS panic button pressed', 10, 'PANIC');
     await speak(msg);
-  }, [speak]);
+  }, [speak, sendCaregiverAlert]);
 
   /* ── Upload distress clip (20s buffer only) ────────── */
   const uploadDistressClip = useCallback(async (phrase: string) => {
@@ -723,27 +818,25 @@ export default function PatientPage() {
 
         {/* Alert badge */}
         {alertSent && (
-          <div style={{ fontSize:12, letterSpacing:'0.06em', fontWeight:600, color:'rgba(74,222,128,0.9)', border:'1px solid rgba(74,222,128,0.28)', background:'rgba(74,222,128,0.06)', padding:'7px 16px', borderRadius:8 }}>
-            ✓ {profile?.emergencyContactName || 'Caregiver'} alerted — help is on the way
+          <div style={{ fontSize:12, letterSpacing:'0.06em', fontWeight:600, color:'rgba(74,222,128,0.9)', border:'1px solid rgba(74,222,128,0.28)', background:'rgba(74,222,128,0.06)', padding:'7px 16px', borderRadius:8, textAlign:'center' }}>
+            {alertMsg || `✓ ${profile?.emergencyContactName || 'Caregiver'} alerted — help is on the way`}
           </div>
         )}
 
-        {/* Map — smart routing */}
+        {/* Map — smart routing (OpenStreetMap embed — free, no API key needed) */}
         {showMap && (() => {
-          const destAddr = profile?.scheduledDestination || profile?.homeAddress || null;
+          const destAddr  = profile?.scheduledDestination || profile?.homeAddress || null;
           const destLabel = mapDestLabel || (profile?.scheduledDestination ? 'Scheduled Destination' : 'Home');
-          // Build embed src: directions embed if we have GPS, else location embed
-          const embedSrc = mapDirectionsUrl
-            ? (GOOGLE_MAPS_KEY
-              ? mapDirectionsUrl
-                  .replace('https://www.google.com/maps/dir/?api=1&', `https://www.google.com/maps/embed/v1/directions?key=${GOOGLE_MAPS_KEY}&`)
-                  .replace('travelmode=walking', 'mode=walking')
-              : null) // No key → skip iframe embed, show open-in-app link only
-            : gps
-              ? `https://maps.google.com/maps?q=${gps.lat},${gps.lng}&z=16&output=embed`
-              : destAddr
-                ? `https://maps.google.com/maps?q=${encodeURIComponent(destAddr)}&output=embed`
-                : null;
+          // Prefer pinned coordinates from profile for the embed
+          const destLat = profile?.destinationLat || profile?.homeLat || null;
+          const destLng = profile?.destinationLng || profile?.homeLng || null;
+          const mapLat  = destLat ? parseFloat(destLat) : gps?.lat ?? null;
+          const mapLng  = destLng ? parseFloat(destLng) : gps?.lng ?? null;
+
+          // OpenStreetMap embed — free, always works, no API key required
+          const osmEmbedSrc = (mapLat && mapLng)
+            ? `https://www.openstreetmap.org/export/embed.html?bbox=${(mapLng - 0.012).toFixed(6)},${(mapLat - 0.008).toFixed(6)},${(mapLng + 0.012).toFixed(6)},${(mapLat + 0.008).toFixed(6)}&layer=mapnik&marker=${mapLat.toFixed(6)},${mapLng.toFixed(6)}`
+            : null;
 
           const directionsHref = mapDirectionsUrl || (destAddr
             ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destAddr)}${gps ? `&origin=${gps.lat},${gps.lng}` : ''}&travelmode=walking`
@@ -755,21 +848,23 @@ export default function PatientPage() {
                 <div style={{ fontSize:10, letterSpacing:'0.1em', textTransform:'uppercase', color:'rgba(74,222,128,0.7)', fontWeight:700 }}>
                   ◈ Route to {destLabel}
                 </div>
-                {gps && <div style={{ fontSize:10, color:'rgba(255,255,255,0.25)', fontFamily:'monospace' }}>
-                  📍 {gps.lat.toFixed(4)}, {gps.lng.toFixed(4)}
+                {(mapLat && mapLng) && <div style={{ fontSize:10, color:'rgba(255,255,255,0.25)', fontFamily:'monospace' }}>
+                  📍 {mapLat.toFixed(4)}, {mapLng.toFixed(4)}
                 </div>}
               </div>
 
-              {embedSrc ? (
+              {osmEmbedSrc ? (
                 <iframe
                   width="100%" height="160" frameBorder="0"
                   style={{ border:0, display:'block', marginBottom:8, opacity:0.88, borderRadius:8 }}
-                  src={embedSrc} allowFullScreen title={`Route to ${destLabel}`}
+                  src={osmEmbedSrc}
+                  title={`Map: ${destLabel}`}
+                  loading="lazy"
                 />
               ) : (
                 <div style={{ fontSize:13, color:'rgba(255,255,255,0.4)', textAlign:'center', padding:'20px 0' }}>
-                  📍 Getting your location…
-                  <br /><span style={{ fontSize:11, color:'rgba(255,255,255,0.25)' }}>Allow location access in your browser</span>
+                  📍 {destAddr || 'Destination not set'}
+                  <br /><span style={{ fontSize:11, color:'rgba(255,255,255,0.25)' }}>Pin your home in Setup for map preview</span>
                 </div>
               )}
 

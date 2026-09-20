@@ -16,11 +16,13 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 export interface SahayStackProps extends cdk.StackProps {
-  readonly bedrockKbId?: string;          // Set after KB is created manually in console
-  readonly snsEmailEndpoint?: string;      // Demo SNS subscription email
-  readonly snsSmsEndpoint?: string;        // Demo SNS SMS phone number
-  readonly frontendUrl?: string;           // Amplify URL (set after first deploy)
-  readonly groqApiKey?: string;            // Groq API key for voice companion AI
+  readonly bedrockKbId?: string;
+  readonly snsEmailEndpoint?: string;
+  readonly snsSmsEndpoint?: string;
+  readonly frontendUrl?: string;
+  readonly groqApiKey?: string;
+  readonly deepgramApiKey?: string;    // Deepgram STT key (stored server-side, never in frontend)
+  readonly sesFromEmail?: string;      // Verified SES sender email
 }
 
 export class SahayStack extends cdk.Stack {
@@ -43,12 +45,14 @@ export class SahayStack extends cdk.Stack {
       pointInTimeRecovery: true,
     });
 
-    // Conversation logs + escalation records + nudge logs (shared table, keyed by conversationId)
+    // Conversation logs + escalation records + nudge logs + alert TTL records
     const conversationsTable = new dynamodb.Table(this, 'ConversationLogs', {
       tableName: 'sahay-conversation-logs',
       partitionKey: { name: 'conversationId', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      removalPolicy: cdk.RemovalPolicy.DESTROY, // Logs — OK to recreate in dev
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      // TTL: auto-expire alert dedup records after their window (set by Lambda)
+      timeToLiveAttribute: 'ttl',
     });
     conversationsTable.addGlobalSecondaryIndex({
       indexName: 'caregiverId-timestamp-index',
@@ -177,6 +181,9 @@ export class SahayStack extends cdk.Stack {
       BEDROCK_KB_ID: props.bedrockKbId || '',
       FRONTEND_URL: props.frontendUrl || 'https://main.d33r1s7xj9cmie.amplifyapp.com',
       GROQ_API_KEY: props.groqApiKey || process.env.GROQ_API_KEY || '',
+      DEEPGRAM_API_KEY: props.deepgramApiKey || process.env.DEEPGRAM_API_KEY || '',
+      SES_FROM_EMAIL: props.sesFromEmail || process.env.SES_FROM_EMAIL || 'protham.dey@gmail.com',
+      ALERT_TTL_MINUTES: '30',
     };
 
     const lambdaDefaults = {
@@ -319,6 +326,18 @@ export class SahayStack extends cdk.Stack {
     // QR Generator
     const generateQrFn = makeLambda('GenerateQR', 'generateQR');
     profilesTable.grantReadData(generateQrFn);
+
+    // Alert Handler (SES email + DynamoDB TTL dedup)
+    const alertFn = makeLambda('AlertHandler', 'alertHandler');
+    conversationsTable.grantReadWriteData(alertFn);
+    alertFn.addToRolePolicy(new iam.PolicyStatement({
+      actions: ['ses:SendEmail', 'ses:SendRawEmail'],
+      resources: ['*'],  // Restrict to verified identity ARN in production
+    }));
+
+    // Deepgram Token Handler (secure key proxy — key never sent to frontend bundle)
+    const deepgramTokenFn = makeLambda('DeepgramTokenHandler', 'deepgramTokenHandler');
+    // No extra permissions needed — just reads DEEPGRAM_API_KEY from env
 
     // =========================================================================
     // STEP FUNCTIONS — Multi-Agent Orchestration
@@ -518,6 +537,14 @@ exports.handler = async (event) => {
     // POST /patient/transcribe  (Groq Whisper STT)
     const patientTranscribe = patient.addResource('transcribe');
     patientTranscribe.addMethod('POST', lambdaIntegration(transcribeFn));
+
+    // POST /patient/alert  (SES email + DynamoDB 30-min TTL dedup)
+    const patientAlert = patient.addResource('alert');
+    patientAlert.addMethod('POST', lambdaIntegration(alertFn));
+
+    // GET /patient/deepgram-token  (secure Deepgram key proxy)
+    const patientDgToken = patient.addResource('deepgram-token');
+    patientDgToken.addMethod('GET', lambdaIntegration(deepgramTokenFn));
 
     // =========================================================================
     // OUTPUTS
