@@ -182,7 +182,9 @@ export class SahayStack extends cdk.Stack {
       FRONTEND_URL: props.frontendUrl || 'https://main.d33r1s7xj9cmie.amplifyapp.com',
       GROQ_API_KEY: props.groqApiKey || process.env.GROQ_API_KEY || '',
       DEEPGRAM_API_KEY: props.deepgramApiKey || process.env.DEEPGRAM_API_KEY || '',
-      SES_FROM_EMAIL: props.sesFromEmail || process.env.SES_FROM_EMAIL || 'protham.dey@gmail.com',
+      // Nodemailer Gmail SMTP — set via CDK context or env vars (never commit actual values)
+      SMTP_USER: process.env.SMTP_USER || '',        // e.g. protham.dey@gmail.com
+      SMTP_PASS: process.env.SMTP_PASS || '',        // Gmail App Password (16 chars)
       ALERT_TTL_MINUTES: '30',
     };
 
@@ -327,13 +329,10 @@ export class SahayStack extends cdk.Stack {
     const generateQrFn = makeLambda('GenerateQR', 'generateQR');
     profilesTable.grantReadData(generateQrFn);
 
-    // Alert Handler (SES email + DynamoDB TTL dedup)
+    // Alert Handler (Nodemailer Gmail SMTP + DynamoDB 30-min TTL dedup)
     const alertFn = makeLambda('AlertHandler', 'alertHandler');
     conversationsTable.grantReadWriteData(alertFn);
-    alertFn.addToRolePolicy(new iam.PolicyStatement({
-      actions: ['ses:SendEmail', 'ses:SendRawEmail'],
-      resources: ['*'],  // Restrict to verified identity ARN in production
-    }));
+    // No extra IAM needed — uses Gmail SMTP (credentials via env vars, not IAM)
 
     // Deepgram Token Handler (secure key proxy — key never sent to frontend bundle)
     const deepgramTokenFn = makeLambda('DeepgramTokenHandler', 'deepgramTokenHandler');

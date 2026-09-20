@@ -1,25 +1,36 @@
 /**
- * alertHandler - Caregiver email alert via AWS SES with 30-min TTL dedup
+ * alertHandler - Caregiver email alert via Nodemailer (Gmail SMTP)
  *
  * POST /patient/alert
  * Body: { caregiverId, caregiverEmail, patientName, message, alertType, distressScore }
  *
- * CAP design:
- *  - Consistency: DynamoDB conditional write prevents duplicate emails
- *  - Availability: fail-open if DynamoDB check fails (patient safety > dedup)
- *  - TTL: 30 minutes per caregiverId (ALERT_TTL_MINUTES env var)
+ * Uses Gmail SMTP via nodemailer - can send to ANY email address (no AWS verification needed).
+ * Requires SMTP_USER (Gmail address) and SMTP_PASS (Gmail App Password) env vars.
+ *
+ * 30-minute TTL dedup via DynamoDB conditional writes (CAP-correct):
+ *  - Consistent read to check for recent alert
+ *  - Conditional PutItem to handle concurrent Lambda invocations safely
+ *  - Fail-open: if DynamoDB check fails, send email anyway (patient safety first)
  */
 
+import nodemailer from "nodemailer";
 import { DynamoDBClient, GetItemCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
-import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
 import { ok, badRequest } from "../shared/response.mjs";
 
 const dynamo = new DynamoDBClient({ region: process.env.AWS_REGION || "ap-south-1" });
-const ses    = new SESClient({ region: process.env.AWS_REGION || "ap-south-1" });
 
-const ALERT_TABLE    = process.env.CONVERSATION_LOGS_TABLE;
-const SES_FROM_EMAIL = process.env.SES_FROM_EMAIL || "protham.dey@gmail.com";
-const ALERT_TTL_MIN  = parseInt(process.env.ALERT_TTL_MINUTES || "30", 10);
+const ALERT_TABLE   = process.env.CONVERSATION_LOGS_TABLE;
+const SMTP_USER     = process.env.SMTP_USER || "";   // your Gmail address
+const SMTP_PASS     = process.env.SMTP_PASS || "";   // Gmail App Password (16 chars)
+const ALERT_TTL_MIN = parseInt(process.env.ALERT_TTL_MINUTES || "30", 10);
+
+// Create reusable transporter (module-level so it's reused across warm Lambda invocations)
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: { user: SMTP_USER, pass: SMTP_PASS },
+  pool: true,         // reuse SMTP connections (faster on warm Lambda)
+  maxConnections: 3,
+});
 
 export const handler = async (event) => {
   console.log("[alert] event", JSON.stringify(event).slice(0, 500));
@@ -43,7 +54,7 @@ export const handler = async (event) => {
   const expiryAt = nowSecs + ALERT_TTL_MIN * 60;
   const alertKey = `alert-${caregiverId}`;
 
-  // 1. Check for recent alert (strongly consistent read)
+  // 1. Check DynamoDB for recent alert (strongly consistent)
   let shouldSuppress = false, secondsUntilNext = 0;
   try {
     const existing = await dynamo.send(new GetItemCommand({
@@ -56,44 +67,41 @@ export const handler = async (event) => {
       if (recordTtl > nowSecs) {
         shouldSuppress = true;
         secondsUntilNext = recordTtl - nowSecs;
-        console.log(`[alert] Suppressed - next in ${secondsUntilNext}s for ${caregiverId}`);
+        console.log(`[alert] Suppressed - next in ${secondsUntilNext}s`);
       }
     }
   } catch (err) {
-    // Fail-open: if DynamoDB check fails, send email anyway (patient safety first)
+    // Fail-open: send email anyway if DynamoDB is unavailable
     console.error("[alert] DynamoDB read failed (fail-open):", err.message);
   }
 
   if (shouldSuppress) {
     return ok({
       sent: false, suppressed: true,
-      reason: `Caregiver was already alerted. Next alert available in ${Math.ceil(secondsUntilNext / 60)} min.`,
+      reason: `Caregiver already alerted. Next alert in ${Math.ceil(secondsUntilNext / 60)} min.`,
       nextAlertInSeconds: secondsUntilNext,
     });
   }
 
-  // 2. Send email via SES
+  // 2. Send email via Nodemailer (Gmail SMTP)
   const timestamp = new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
   let emailSent = false;
   try {
-    await ses.send(new SendEmailCommand({
-      Source: SES_FROM_EMAIL,
-      Destination: { ToAddresses: [caregiverEmail] },
-      Message: {
-        Subject: { Data: buildSubject(alertType, patientName), Charset: "UTF-8" },
-        Body: {
-          Html: { Data: buildHtmlEmail({ patientName, message, alertType, distressScore, timestamp }), Charset: "UTF-8" },
-          Text: { Data: buildTextEmail({ patientName, message, alertType, distressScore, timestamp }), Charset: "UTF-8" },
-        },
-      },
-    }));
+    if (!SMTP_USER || !SMTP_PASS) throw new Error("SMTP credentials not configured");
+    await transporter.sendMail({
+      from: `"Sahay · सहाय" <${SMTP_USER}>`,
+      to: caregiverEmail,
+      subject: buildSubject(alertType, patientName),
+      text: buildTextEmail({ patientName, message, alertType, distressScore, timestamp }),
+      html: buildHtmlEmail({ patientName, message, alertType, distressScore, timestamp }),
+    });
     emailSent = true;
     console.log(`[alert] Email sent to ${caregiverEmail} for ${patientName}`);
   } catch (err) {
-    console.error("[alert] SES send failed:", err.message, err.code);
+    console.error("[alert] Nodemailer send failed:", err.message);
   }
 
-  // 3. Write TTL record (conditional: only if not already set by concurrent invocation)
+  // 3. Write TTL record (conditional write handles concurrent Lambda races)
   try {
     await dynamo.send(new PutItemCommand({
       TableName: ALERT_TABLE,
@@ -125,8 +133,8 @@ export const handler = async (event) => {
     caregiverEmail,
     nextAlertInSeconds: ALERT_TTL_MIN * 60,
     message: emailSent
-      ? `Alert sent. Next alert available in ${ALERT_TTL_MIN} minutes.`
-      : `Email delivery failed. Please call the caregiver directly.`,
+      ? `Alert sent to ${caregiverEmail}. Next alert in ${ALERT_TTL_MIN} minutes.`
+      : `Email failed. Please call the caregiver directly. Check SMTP_USER/SMTP_PASS Lambda env vars.`,
   });
 };
 

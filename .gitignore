@@ -76,3 +76,7 @@ burnout-result.json
 response.json
 test_bedrock_access.py
 
+
+# Lambda dependencies (installed at deploy time)
+lambdas/node_modules/
+lambdas/package-lock.json

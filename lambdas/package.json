@@ -1,0 +1,9 @@
+{
+  "name": "sahay-lambdas",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Sahay Lambda functions",
+  "dependencies": {
+    "nodemailer": "^6.9.14"
+  }
+}
