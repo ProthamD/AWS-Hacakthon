@@ -16,7 +16,7 @@ import { API_BASE } from '../App';
 
 /* ─── Config ─────────────────────────────────────────── */
 // NOTE: DEEPGRAM_KEY is fetched from backend at runtime (not baked into bundle)
-const GOOGLE_MAPS_KEY        = import.meta.env.VITE_GOOGLE_MAPS_KEY || '';
+// Map uses OpenStreetMap (free, no API key needed — GOOGLE_MAPS_KEY removed)
 const BUFFER_SECS            = 20;
 const MAX_RETRIES            = 2;
 const ALERT_TTL_MS           = 30 * 60 * 1000;  // 30 minutes client-side guard
