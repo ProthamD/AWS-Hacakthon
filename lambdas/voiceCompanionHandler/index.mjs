@@ -48,6 +48,10 @@ export const handler = async (event) => {
   let aiResponse = "", distressScore = 1, isDistress = false,
       shouldAlertCaregiver = false, intent = "other";
 
+  // Groq with 8s timeout — prevents P99 tail hangs on slow responses
+  const groqController = new AbortController();
+  const groqTimeout = setTimeout(() => groqController.abort(), 8_000);
+
   try {
     const groqRes = await fetch(GROQ_API_URL, {
       method: "POST",
@@ -55,14 +59,16 @@ export const handler = async (event) => {
         "Authorization": `Bearer ${GROQ_API_KEY}`,
         "Content-Type": "application/json",
       },
+      signal: groqController.signal,
       body: JSON.stringify({
         model: MODEL,
         messages,
         temperature: 0.35,
-        max_tokens: 300,
+        max_tokens: 280,         // reduced from 300 — tighter = faster
         // Note: qwen/qwen3.8-27b follows JSON instructions without response_format mode
       }),
     });
+    clearTimeout(groqTimeout);
 
     if (!groqRes.ok) {
       const err = await groqRes.text();
@@ -137,40 +143,49 @@ export const handler = async (event) => {
     console.log(`[voiceCompanion] transcript="${transcript}" intent="${intent}" distress=${distressScore} hasResponse=${!!aiResponse}`);
 
   } catch (err) {
-    console.error("[voiceCompanion] Fetch failed:", err);
+    clearTimeout(groqTimeout);
+    if (err.name === 'AbortError') {
+      console.warn("[voiceCompanion] Groq timed out after 8s — using fallback");
+    } else {
+      console.error("[voiceCompanion] Fetch failed:", err);
+    }
     return fallbackResponse(transcript, patientProfile);
   }
+
+  // Trim spoken response — strip markdown artifacts before sending to Polly
+  aiResponse = aiResponse.trim().replace(/^["']+|["']+$/g, '').slice(0, 500);
 
   if (!aiResponse) {
     return fallbackResponse(transcript, patientProfile);
   }
 
-  // Synthesize speech with AWS Polly (Aditi — Indian English neural voice)
-  let audioBase64 = null;
-  try {
-    const pollyRes = await polly.send(new SynthesizeSpeechCommand({
-      Text: aiResponse,
-      OutputFormat: "mp3",
-      VoiceId: "Aditi",          // Indian English, warm and natural
-      Engine: "standard",
-      LanguageCode: "en-IN",
-    }));
-    if (pollyRes.AudioStream) {
-      const chunks = [];
-      for await (const chunk of pollyRes.AudioStream) chunks.push(chunk);
-      audioBase64 = Buffer.concat(chunks).toString("base64");
-    }
-  } catch (pollyErr) {
-    console.warn("[voiceCompanion] Polly failed (non-fatal, frontend will use TTS):", pollyErr.message);
-    // Non-fatal — frontend falls back to browser SpeechSynthesis
-  }
-
-  // ── Smart map destination resolution ─────────────────────────────────────
-  let mapRoute = null;
+  // ── Run Polly + map resolution in PARALLEL (both are independent of each other) ──
   const needsMap = ['destination_query','lost'].includes(intent);
-  if (needsMap) {
-    mapRoute = resolveMapDestination(patientProfile, currentLocation, transcript, intent);
-  }
+  const [audioBase64, mapRoute] = await Promise.all([
+    // Polly TTS synthesis
+    (async () => {
+      try {
+        const pollyRes = await polly.send(new SynthesizeSpeechCommand({
+          Text: aiResponse,
+          OutputFormat: "mp3",
+          VoiceId: "Aditi",
+          Engine: "standard",
+          LanguageCode: "en-IN",
+        }));
+        if (pollyRes.AudioStream) {
+          const chunks = [];
+          for await (const chunk of pollyRes.AudioStream) chunks.push(chunk);
+          return Buffer.concat(chunks).toString("base64");
+        }
+        return null;
+      } catch (pollyErr) {
+        console.warn("[voiceCompanion] Polly failed (non-fatal):", pollyErr.message);
+        return null;
+      }
+    })(),
+    // Map destination resolution (CPU-only, no I/O, but done in parallel)
+    Promise.resolve(needsMap ? resolveMapDestination(patientProfile, currentLocation, transcript, intent) : null),
+  ]);
 
   return ok({
     response: aiResponse,

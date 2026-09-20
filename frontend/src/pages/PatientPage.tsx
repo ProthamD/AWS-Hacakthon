@@ -221,15 +221,31 @@ export default function PatientPage() {
     }
   }, []);
 
-  /* boot — fetch Deepgram key from backend, then init mic */
+  /* boot — fetch Deepgram key + init mic IN PARALLEL for fastest startup */
   useEffect(() => {
     mountedRef.current = true;
-    // Fetch Deepgram key from backend (not from bundle env var)
-    fetch(`${API_BASE}/patient/deepgram-token`, { cache: 'no-store' })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (d?.key && mountedRef.current) setDgKey(d.key); })
-      .catch(() => { /* non-fatal — will fall back to PTT mode */ })
-      .finally(() => initMic());
+
+    // Run both in parallel — mic permission + token fetch don't depend on each other
+    Promise.all([
+      // 1. Fetch Deepgram key from backend (5s timeout so slow API never delays mic)
+      (async () => {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 5_000);
+          const r = await fetch(`${API_BASE}/patient/deepgram-token`, {
+            cache: 'no-store', signal: ctrl.signal,
+          });
+          clearTimeout(t);
+          if (r.ok) {
+            const d = await r.json();
+            if (d?.key && mountedRef.current) setDgKey(d.key);
+          }
+        } catch { /* non-fatal — falls back to PTT */ }
+      })(),
+      // 2. Request mic permission simultaneously
+      initMic(),
+    ]);
+
     return () => {
       mountedRef.current = false;
       streamRef.current?.getTracks().forEach(t => t.stop());

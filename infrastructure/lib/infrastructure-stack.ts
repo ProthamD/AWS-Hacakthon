@@ -273,11 +273,14 @@ export class SahayStack extends cdk.Stack {
     }));
 
     // Voice Companion Handler (Groq-powered patient AI)
+    // 512MB: AWS allocates CPU proportional to memory — 2x memory = 2x CPU = faster JSON parse + Polly
     const voiceCompanionFn = makeLambda('VoiceCompanionHandler', 'voiceCompanionHandler');
+    voiceCompanionFn.addEnvironment('GROQ_API_KEY', props.groqApiKey || process.env.GROQ_API_KEY || '');
+    // Override memory to 512MB for better CPU allocation (voice is latency-sensitive)
+    (voiceCompanionFn.node.defaultChild as lambda.CfnFunction).memorySize = 512;
     profilesTable.grantReadData(voiceCompanionFn);
     alertsTopic.grantPublish(voiceCompanionFn);
     audioBucket.grantPut(voiceCompanionFn);
-    voiceCompanionFn.addEnvironment('GROQ_API_KEY', props.groqApiKey || process.env.GROQ_API_KEY || '');
 
     // Transcribe Handler (Groq Whisper STT — replaces browser SpeechRecognition)
     const transcribeFn = makeLambda('TranscribeHandler', 'transcribeHandler',
@@ -465,6 +468,16 @@ exports.handler = async (event) => {
       ruleName: 'sahay-burnout-check',
       schedule: events.Schedule.rate(cdk.Duration.hours(6)),
       targets: [new targets.LambdaFunction(burnoutFn)],
+    });
+
+    // Lambda warm-up ping every 5 minutes — prevents cold starts during hackathon demo
+    // Sends a dummy event that the handler ignores (returns immediately on missing transcript)
+    new events.Rule(this, 'VoiceCompanionWarmup', {
+      ruleName: 'sahay-voice-warmup',
+      schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
+      targets: [new targets.LambdaFunction(voiceCompanionFn, {
+        event: events.RuleTargetInput.fromObject({ source: 'warmup' }),
+      })],
     });
 
     // =========================================================================
