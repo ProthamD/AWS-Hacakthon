@@ -180,7 +180,7 @@ export class SahayStack extends cdk.Stack {
     };
 
     const lambdaDefaults = {
-      runtime: lambda.Runtime.NODEJS_20_X,
+      runtime: lambda.Runtime.NODEJS_24_X,
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
       environment: commonEnv,
@@ -196,7 +196,7 @@ export class SahayStack extends cdk.Stack {
       });
 
       return new lambda.Function(this, id, {
-        runtime: lambda.Runtime.NODEJS_20_X,
+        runtime: lambda.Runtime.NODEJS_24_X,
         timeout: cdk.Duration.seconds(30),
         memorySize: 256,
         functionName: `sahay-${id.toLowerCase().replace(/[A-Z]/g, (m: string) => '-' + m.toLowerCase())}`,

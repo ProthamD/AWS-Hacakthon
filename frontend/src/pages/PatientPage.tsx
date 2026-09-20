@@ -1,102 +1,85 @@
 /**
- * PatientPage v3
+ * PatientPage — Sahay Voice Companion for Alzheimer's patients
  *
- * Speech pipeline:
- *  1. Deepgram Nova-3 WebSocket (real-time, 250ms chunks, endpointing=800ms)
- *     - Only fires handleSpeech() when IS_FINAL=true AND transcript ≥ 4 chars
- *     - "Name" wake-word filter: ignores background chat unless the patient speaks ≥ 14s
- *  2. Groq Whisper fallback (14s rolling chunks) if Deepgram unavailable
- *  3. POST /patient/voice → Llama 3.3 for response + distress score
- *  4. SpeechSynthesis for output
- *  5. 20s rolling buffer for panic audio upload
+ * Voice pipeline:
+ *   MODE A: Deepgram Nova-2 always-on WebSocket (filtered by wake phrases)
+ *   MODE B: Push-to-Talk (PTT) button → Groq Whisper → NO wake-gate (always responds)
+ *
+ * Audio storage rule:
+ *   ONLY the 20-second rolling buffer around a distress event is uploaded to cloud.
+ *   Continuous audio is NEVER sent to cloud.
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { API_BASE } from '../App';
 
-/* ── Config ─────────────────────────────────────────── */
-const DEEPGRAM_KEY = import.meta.env.VITE_DEEPGRAM_KEY || '';
-const CHUNK_MS = 14000;           // Groq fallback: 14s chunks (was 7s)
-const BUFFER_SECS = 20;
-const SILENCE_RMS = 4;            // lower = more sensitive
-const MAX_RETRIES = 2;
+/* ─── Config ─────────────────────────────────────────── */
+const DEEPGRAM_KEY      = import.meta.env.VITE_DEEPGRAM_KEY || '';
+const GOOGLE_MAPS_KEY   = import.meta.env.VITE_GOOGLE_MAPS_KEY || '';
+const BUFFER_SECS       = 20;
+const MAX_RETRIES       = 2;
 
-/**
- * WAKE PHRASES — triggers Sahay to respond.
- * Covers: name-wake, distress/fear, disorientation, memory lapses, calls for help.
- * Does NOT trigger on general background speech (TV, other people talking).
- */
+const MIME = (typeof MediaRecorder !== 'undefined' &&
+  MediaRecorder.isTypeSupported('audio/webm;codecs=opus'))
+  ? 'audio/webm;codecs=opus'
+  : 'audio/webm';
+
+/* ─── Wake / distress phrases ────────────────────────── */
 const WAKE_PHRASES = [
-  // Direct address
-  'sahay', 'sehaj', 'sahaj', 'sahai', 'shaay',   // Deepgram phonetic mishears
-
-  // Memory lapse signals
-  'what is my name', 'who am i', "i don't know who i am",
-  "i can't remember", 'i forgot', "i don't remember",
-  "what's happening", 'what is happening', "i don't understand",
-  'where are we', 'what day is it', 'what year is it',
-  'where is my home', 'i want to go home', 'take me home',
-
-  // Disorientation / location
-  'i am lost', "i'm lost", 'where am i', 'i do not know where',
-  'show me the route', 'show me the way', 'where should i go',
-  'which way', 'which direction', 'i missed my stop',
-
-  // Fear / distress
-  'help me', 'i need help', 'help',
-  'scared', 'i am scared', "i'm scared", 'i am afraid', "i'm afraid",
-  'frightened', 'worried', 'anxious', 'panic', 'something is wrong',
-  "i don't feel safe", 'i feel lost', 'i feel confused',
-  'everything is confusing', 'nothing makes sense',
-
-  // Asking about surroundings/people
-  'who are you', 'what are you', 'do i know you',
-  'who is that', 'where is', 'where did everyone go',
-  'where is my family', 'where is my son', 'where is my daughter',
-  'where is my husband', 'where is my wife',
-
-  // Physical needs + emergencies
-  'i fell', 'i am falling', 'i cannot get up', 'call someone',
-  'call my son', 'call my daughter', 'call my family',
-  'i am not feeling well', 'i feel sick', 'something hurts',
+  'sahay','sehaj','sahaj','sahai','shaay',
+  'what is my name','who am i',"i don't know who i am",
+  "i can't remember",'i forgot',"i don't remember",
+  "what's happening",'what is happening',"i don't understand",
+  'where are we','what day is it','what year is it',
+  'where is my home','i want to go home','take me home',
+  'i am lost',"i'm lost",'where am i','i do not know where',
+  'show me the route','show me the way','where should i go',
+  'which way','which direction','i missed my stop',
+  'help me','i need help','help',
+  'scared','i am scared',"i'm scared",'i am afraid',"i'm afraid",
+  'frightened','worried','anxious','panic','something is wrong',
+  "i don't feel safe",'i feel lost','i feel confused',
+  'everything is confusing','nothing makes sense',
+  'who are you','what are you','do i know you',
+  'who is that','where is','where did everyone go',
+  'where is my family','where is my son','where is my daughter',
+  'where is my husband','where is my wife',
+  'i fell','i am falling','i cannot get up','call someone',
+  'call my son','call my daughter','call my family',
+  'i am not feeling well','i feel sick','something hurts',
 ];
 
-/** Phrases that signal high emotional distress → auto-trigger caregiver alert */
-const HIGH_DISTRESS_PHRASES = [
-  'help', 'i fell', 'cannot get up', 'i am scared', "i'm scared",
-  'i feel sick', 'something hurts', 'call my', 'i am in pain',
-  'cannot breathe', 'chest hurts', 'i am dying',
+const HIGH_DISTRESS = [
+  'help','i fell','cannot get up','i am scared',"i'm scared",
+  'i feel sick','something hurts','call my','i am in pain',
+  'cannot breathe','chest hurts','i am dying',
 ];
 
-function isDirectedAtSahay(t: string): boolean {
+function isWakePhrase(t: string): boolean {
   const lower = t.toLowerCase().trim();
-
-  // Always respond to direct name call
   if (lower.startsWith('sahay') || lower.includes('hey sahay')) return true;
-
-  // Check wake phrases
   if (WAKE_PHRASES.some(p => lower.includes(p))) return true;
-
-  // Also respond if utterance is short + questioning (confused patient)
-  // e.g. "Where am I?" "Who is this?" — short question-like phrases
   const words = lower.split(' ').filter(Boolean).length;
-  const isQuestion = lower.endsWith('?') || lower.startsWith('who') || lower.startsWith('where') ||
-    lower.startsWith('what') || lower.startsWith('when') || lower.startsWith('how do i');
-  if (isQuestion && words <= 6) return true;
-
-  return false;
+  const isQ = lower.endsWith('?') || lower.startsWith('who') ||
+    lower.startsWith('where') || lower.startsWith('what') ||
+    lower.startsWith('when') || lower.startsWith('how do i');
+  return isQ && words <= 7;
 }
 
 function isHighDistress(t: string): boolean {
-  const lower = t.toLowerCase();
-  return HIGH_DISTRESS_PHRASES.some(p => lower.includes(p));
+  return HIGH_DISTRESS.some(p => t.toLowerCase().includes(p));
 }
 
-/* ── Helpers ─────────────────────────────────────────── */
-async function fetchRetry(url: string, opts: RequestInit, retries = MAX_RETRIES) {
+/* ─── Network helper ─────────────────────────────────── */
+async function fetchRetry(
+  url: string,
+  opts: RequestInit,
+  retries = MAX_RETRIES,
+): Promise<Response | undefined> {
   for (let i = 0; i <= retries; i++) {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 9000);
+    const timer = setTimeout(() => ctrl.abort(), 10_000);
     try {
       const r = await fetch(url, { ...opts, signal: ctrl.signal });
       clearTimeout(timer);
@@ -104,679 +87,804 @@ async function fetchRetry(url: string, opts: RequestInit, retries = MAX_RETRIES)
     } catch (e) {
       clearTimeout(timer);
       if (i === retries) throw e;
-      await new Promise(r => setTimeout(r, 500 * (i + 1)));
+      await new Promise(r2 => setTimeout(r2, 600 * (i + 1)));
     }
   }
 }
 
-function localFallback(t: string, profile: any) {
-  const lower = t.toLowerCase();
-  const name = profile?.patientName || 'dear';
-  const contact = profile?.emergencyContactName || 'your caregiver';
-  if (lower.includes('what is my name') || lower.includes('who am i'))
-    return { text: `Your name is ${name}.`, alert: false };
-  if (lower.includes('route') || lower.includes('show me') || lower.includes('where should i go'))
-    return { text: 'I am bringing up the map for you now.', alert: false, map: true };
-  if (lower.includes('lost') || lower.includes('where am i'))
-    return { text: `${name}, please stay where you are. I am alerting ${contact} right now. Help is on the way.`, alert: true, map: true };
-  if (lower.includes('help') || lower.includes('scared') || lower.includes('afraid'))
-    return { text: `${name}, you are safe. I am alerting ${contact} right now.`, alert: true };
-  if (lower.includes('who are you') || lower.includes('what are you'))
-    return { text: 'I am Sahay, your voice companion. I am always here to help you.', alert: false };
-  if (lower.includes('sahay'))
-    return { text: `I am here, ${name}. How can I help you?`, alert: false };
-  return { text: `${name}, you are safe. I am here with you.`, alert: false };
-}
-
-/* ── Component ───────────────────────────────────────── */
+/* ─── Local fallback responses ───────────────────────── */
 interface Profile {
   patientName?: string;
   patientAge?: string;
   homeAddress?: string;
+  homeLat?: string;
+  homeLng?: string;
+  scheduledDestination?: string;
+  destinationLat?: string;
+  destinationLng?: string;
+  destinationPriority?: 'normal' | 'high';
   emergencyContactName?: string;
   emergencyContactPhone?: string;
+  dementiaStage?: string;
+  dailyRoutine?: string;
+  keyRelationships?: string;
+  likesAndDislikes?: string;
 }
+
+function localFallback(t: string, profile: Profile | null) {
+  const lower   = t.toLowerCase();
+  const name    = profile?.patientName || 'dear';
+  const contact = profile?.emergencyContactName || 'your caregiver';
+  if (lower.includes('what is my name') || lower.includes('who am i'))
+    return { text: `Your name is ${name}. You are completely safe.`, alert: false };
+  if (lower.includes('route') || lower.includes('show me') ||
+      lower.includes('where should i go') || lower.includes('where am i going'))
+    return { text: 'I am bringing up the map to your home right now.', alert: false, map: true };
+  if (lower.includes('lost') || lower.includes('where am i'))
+    return { text: `${name}, please stay exactly where you are. I am alerting ${contact} now. Help is coming.`, alert: true, map: true };
+  if (lower.includes('help') || lower.includes('scared') || lower.includes('afraid'))
+    return { text: `${name}, you are safe. I am right here with you. I am alerting ${contact} now.`, alert: true };
+  if (lower.includes('who are you') || lower.includes('what are you'))
+    return { text: 'I am Sahay, your voice companion. I am always here to help you.', alert: false };
+  if (lower.includes('sahay'))
+    return { text: `I am here, ${name}. How can I help you?`, alert: false };
+  return { text: `${name}, you are safe. I am here with you. What do you need?`, alert: false };
+}
+
+function detectIntentClient(transcript: string): {
+  needMap: boolean;
+  isLost: boolean;
+  isLocation: boolean;
+} {
+  const t = transcript.toLowerCase();
+  const needMap = t.includes('route') || t.includes('show me the way') ||
+    t.includes('where am i going') || t.includes('where do i need to go') ||
+    t.includes('how do i get') || t.includes('directions') || t.includes('navigate');
+  const isLost = t.includes('i am lost') || t.includes("i'm lost") ||
+    t.includes('where am i') || t.includes('i am lost') || t.includes('i do not know where');
+  const isLocation = t.includes('location') || t.includes('my location') ||
+    t.includes('where am i') || t.includes('current location') ||
+    t.includes('where is this') || t.includes('where are we');
+  return { needMap, isLost, isLocation };
+}
+
+
 interface ConvMsg { who: 'patient' | 'sahay'; text: string; }
+type StatusType = 'idle' | 'listening' | 'recording' | 'thinking' | 'speaking' | 'error';
 
-type StatusType = 'starting' | 'listening' | 'thinking' | 'speaking' | 'error';
-
+/* ─── Component ──────────────────────────────────────── */
 export default function PatientPage() {
-  const [time, setTime] = useState(new Date());
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [status, setStatus] = useState<StatusType>('starting');
-  const [lastHeard, setLastHeard] = useState('');
-  const [lastSpoken, setLastSpoken] = useState('');
-  const [alertSent, setAlertSent] = useState(false);
-  const [log, setLog] = useState<ConvMsg[]>([]);
-  const [speaking, setSpeaking] = useState(false);
-  const [showMap, setShowMap] = useState(false);
-  const [gps, setGps] = useState<{ lat: number; lng: number } | null>(null);
+  const navigate = useNavigate();
 
-  const profileRef = useRef<Profile | null>(null);
-  const alertRef = useRef(false);
-  const speakingRef = useRef(false);
-  const speakEndRef = useRef(0);
+  const [time,       setTime]       = useState(new Date());
+  const [profile,    setProfile]    = useState<Profile | null>(null);
+  const [status,     setStatus]     = useState<StatusType>('idle');
+  const [lastHeard,  setLastHeard]  = useState('');
+  const [lastSpoken, setLastSpoken] = useState('');
+  const [alertSent,  setAlertSent]  = useState(false);
+  const [log,        setLog]        = useState<ConvMsg[]>([]);
+  const [speaking,   setSpeaking]   = useState(false);
+  const [showMap,    setShowMap]    = useState(false);
+  const [gps,        setGps]        = useState<{ lat: number; lng: number } | null>(null);
+  const [mapDirectionsUrl, setMapDirectionsUrl] = useState<string | null>(null);
+  const [mapDestLabel, setMapDestLabel] = useState<string>('');
+  const [dgStatus,   setDgStatus]   = useState<'off'|'connecting'|'live'|'fallback'>('off');
+  const [debugMsg,   setDebugMsg]   = useState('');
+  const [pttActive,  setPttActive]  = useState(false);
+
+  /* ─── Refs ───────────────────────────────────────── */
+  const profileRef    = useRef<Profile | null>(null);
+  const alertRef      = useRef(false);
+  const speakingRef   = useRef(false);
+  const speakEndRef   = useRef(0);
   const processingRef = useRef(false);
-  const sessionRef = useRef<any[]>([]);
-  const bufferRef = useRef<Blob[]>([]);
-  const streamRef = useRef<MediaStream | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const loopRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dgSocketRef = useRef<WebSocket | null>(null);
-  const usingDGRef = useRef(false);
+  const sessionRef    = useRef<{ role: string; content: string }[]>([]);
+  const mountedRef    = useRef(true);
+  const streamRef     = useRef<MediaStream | null>(null);
+  const audioCtxRef   = useRef<AudioContext | null>(null);
+  const dgSocketRef   = useRef<WebSocket | null>(null);
+  const dgRecRef      = useRef<MediaRecorder | null>(null);
+  const usingDGRef    = useRef(false);
+  const bufferRef     = useRef<Blob[]>([]);
+  const bufferTsRef   = useRef<number[]>([]);
+  const pttRecRef     = useRef<MediaRecorder | null>(null);
+  const pttChunksRef  = useRef<Blob[]>([]);
 
   useEffect(() => { profileRef.current = profile; }, [profile]);
 
-  // Clock
+  /* clock */
   useEffect(() => {
-    const t = setInterval(() => setTime(new Date()), 1000);
+    const t = setInterval(() => setTime(new Date()), 1_000);
     return () => clearInterval(t);
   }, []);
 
-  // Load profile
+  /* load profile */
   useEffect(() => {
     try {
       const raw = localStorage.getItem('sahay_patient_profile');
       if (raw) { const p = JSON.parse(raw); setProfile(p); profileRef.current = p; }
-    } catch {}
+    } catch { /* ignore */ }
   }, []);
 
-  // Preload voices
+  /* preload voices */
   useEffect(() => {
     if (window.speechSynthesis) {
       window.speechSynthesis.getVoices();
-      window.speechSynthesis.addEventListener('voiceschanged', () => {});
+      window.speechSynthesis.onvoiceschanged = () => {};
     }
   }, []);
 
-  // Start mic
+  /* boot */
   useEffect(() => {
-    startMic();
+    mountedRef.current = true;
+    initMic();
     return () => {
-      if (loopRef.current) clearTimeout(loopRef.current);
+      mountedRef.current = false;
       streamRef.current?.getTracks().forEach(t => t.stop());
+      audioCtxRef.current?.close().catch(() => {});
       window.speechSynthesis?.cancel();
-      if (dgSocketRef.current) dgSocketRef.current.close();
+      try { dgSocketRef.current?.close(); } catch { /* ok */ }
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const getRMS = () => {
-    if (!analyserRef.current) return 100;
-    const d = new Uint8Array(analyserRef.current.frequencyBinCount);
-    analyserRef.current.getByteTimeDomainData(d);
-    let sum = 0;
-    for (const v of d) sum += Math.abs(v - 128);
-    return sum / d.length;
-  };
-
-  const startMic = async () => {
+  /* ── Init microphone ──────────────────────────────── */
+  const initMic = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       streamRef.current = stream;
-
       const ctx = new AudioContext();
-      const src = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 256;
-      src.connect(analyser);
-      analyserRef.current = analyser;
-
+      ctx.createMediaStreamSource(stream); // keep ctx alive
+      audioCtxRef.current = ctx;
+      if (!mountedRef.current) return;
       setStatus('listening');
-      DEEPGRAM_KEY ? startDeepgram(stream) : scheduleChunk(stream);
-    } catch {
-      setStatus('error');
+      setDebugMsg('Mic ready — hold the 🎤 button to speak');
+      if (DEEPGRAM_KEY) openDeepgram(stream);
+      else { setDgStatus('fallback'); setDebugMsg('Hold the 🎤 button to speak (Groq Whisper mode)'); }
+    } catch (err) {
+      console.error('[Sahay] Mic error:', err);
+      if (mountedRef.current) { setStatus('error'); setDebugMsg('Microphone access denied. Tap the orb to retry.'); }
     }
-  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // ── Deepgram WebSocket ─────────────────────────────
-  const startDeepgram = (stream: MediaStream) => {
-    usingDGRef.current = true;
+  /* ── Deepgram always-on ───────────────────────────── */
+  const openDeepgram = useCallback((stream: MediaStream) => {
+    setDgStatus('connecting');
     const url = [
       'wss://api.deepgram.com/v1/listen',
-      '?model=nova-3',
+      '?model=nova-2',
       '&smart_format=true',
-      '&sentiment=true',
-      '&endpointing=800',          // 800ms silence = sentence done
-      '&interim_results=false',    // only fire on final
-      '&utterance_end_ms=1500',    // extra confirmation window
+      '&endpointing=700',
+      '&interim_results=false',
+      '&utterance_end_ms=1200',
+      '&vad_events=true',
     ].join('');
-
     const socket = new WebSocket(url, ['token', DEEPGRAM_KEY]);
     dgSocketRef.current = socket;
+    const rec = new MediaRecorder(stream, { mimeType: MIME });
+    dgRecRef.current = rec;
 
-    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
-    const rec = new MediaRecorder(stream, { mimeType: mime });
-
-    socket.onopen = () => { rec.start(250); };
+    socket.onopen = () => {
+      console.log('[Sahay] Deepgram open');
+      setDgStatus('live');
+      usingDGRef.current = true;
+      setDebugMsg('Deepgram live — say a wake phrase or hold 🎤 to speak freely');
+      rec.start(250);
+    };
 
     rec.ondataavailable = (e) => {
       if (e.data.size > 0) {
         bufferRef.current.push(e.data);
-        if (bufferRef.current.length > BUFFER_SECS * 4) bufferRef.current.shift();
+        bufferTsRef.current.push(Date.now());
+        while (bufferTsRef.current.length > BUFFER_SECS * 4) {
+          bufferRef.current.shift(); bufferTsRef.current.shift();
+        }
         if (socket.readyState === WebSocket.OPEN) socket.send(e.data);
       }
     };
 
     socket.onmessage = (ev) => {
-      const data = JSON.parse(ev.data);
-      const alt = data?.channel?.alternatives?.[0];
-      const transcript: string = alt?.transcript || '';
-      if (!data.is_final || transcript.length < 4) return;
-      const sentiment = alt?.sentiment || 'neutral';
-      handleSpeech(transcript, sentiment);
+      try {
+        const data = JSON.parse(ev.data as string);
+        if (data.type === 'SpeechStarted') return;
+        const alt = data?.channel?.alternatives?.[0];
+        const transcript: string = alt?.transcript || '';
+        if (!data.is_final || transcript.length < 3) return;
+        setDebugMsg(`Heard (always-on): "${transcript.slice(0, 55)}"`);
+        if (isWakePhrase(transcript) || isHighDistress(transcript)) {
+          handleSpeech(transcript, alt?.sentiment || 'neutral', false);
+        } else {
+          setDebugMsg(`Not a wake phrase — hold 🎤 to speak freely`);
+        }
+      } catch { /* malformed */ }
     };
 
-    socket.onclose = () => {
-      console.warn('[Sahay] Deepgram closed → Groq fallback');
+    socket.onclose = (evt) => {
+      console.warn('[Sahay] Deepgram closed', evt.code);
       usingDGRef.current = false;
-      try { rec.stop(); } catch {}
-      scheduleChunk(streamRef.current!);
+      setDgStatus('fallback');
+      setDebugMsg('Deepgram disconnected — use hold-to-talk button');
+      try { rec.stop(); } catch { /* ok */ }
     };
 
-    socket.onerror = () => {
-      console.warn('[Sahay] Deepgram error');
-    };
-  };
+    socket.onerror = () => { /* onclose will fire */ };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // ── Groq Whisper fallback ──────────────────────────
-  const scheduleChunk = (stream: MediaStream) => {
-    if (!stream || usingDGRef.current) return;
-    const chunks: Blob[] = [];
-    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
-    const rec = new MediaRecorder(stream, { mimeType: mime });
-
+  /* ── Push-to-Talk: start ────────────────────────── */
+  const startPTT = useCallback(() => {
+    if (!streamRef.current || speakingRef.current || processingRef.current) return;
+    pttChunksRef.current = [];
+    const rec = new MediaRecorder(streamRef.current, { mimeType: MIME });
+    pttRecRef.current = rec;
     rec.ondataavailable = (e) => {
       if (e.data.size > 0) {
-        chunks.push(e.data);
+        pttChunksRef.current.push(e.data);
         bufferRef.current.push(e.data);
-        if (bufferRef.current.length > BUFFER_SECS / (CHUNK_MS / 1000)) bufferRef.current.shift();
+        bufferTsRef.current.push(Date.now());
+        while (bufferTsRef.current.length > BUFFER_SECS * 4) {
+          bufferRef.current.shift(); bufferTsRef.current.shift();
+        }
       }
     };
+    rec.start(100);
+    setPttActive(true);
+    setStatus('recording');
+    setDebugMsg('Recording… release to send to Sahay');
+  }, []);
 
-    rec.onstop = async () => {
-      if (!chunks.length || usingDGRef.current) { scheduleChunk(stream); return; }
-      const msSince = Date.now() - speakEndRef.current;
-      if (speakingRef.current || msSince < 2000) { scheduleChunk(stream); return; }
-      if (getRMS() < SILENCE_RMS) { scheduleChunk(stream); return; }
-      if (processingRef.current) { scheduleChunk(stream); return; }
-
-      processingRef.current = true;
-      const blob = new Blob(chunks, { type: mime });
-      const b64 = await new Promise<string>(res => {
-        const r = new FileReader();
-        r.onloadend = () => res((r.result as string).split(',')[1]);
-        r.readAsDataURL(blob);
+  /* ── Push-to-Talk: stop ─────────────────────────── */
+  const stopPTT = useCallback(async () => {
+    setPttActive(false);
+    const rec = pttRecRef.current;
+    if (!rec || rec.state !== 'recording') {
+      if (mountedRef.current) setStatus('listening');
+      return;
+    }
+    await new Promise<void>(resolve => {
+      rec.onstop = () => resolve();
+      try { rec.stop(); } catch { resolve(); }
+    });
+    const chunks = pttChunksRef.current;
+    if (!chunks.length) {
+      setDebugMsg('No audio captured — try again');
+      if (mountedRef.current) setStatus('listening');
+      return;
+    }
+    setStatus('thinking');
+    setDebugMsg('Transcribing your speech…');
+    const blob = new Blob(chunks, { type: MIME });
+    const b64 = await blobToBase64(blob);
+    let transcript = '';
+    try {
+      const resp = await fetchRetry(`${API_BASE}/patient/transcribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audioBase64: b64, mimeType: MIME }),
       });
+      if (resp?.ok) {
+        const json = await resp.json();
+        transcript = json.transcript || '';
+        setDebugMsg(`You said: "${transcript.slice(0, 60)}"`);
+      } else {
+        setDebugMsg(`Transcribe HTTP ${resp?.status} — using local fallback`);
+      }
+    } catch (err) {
+      setDebugMsg(`Transcribe error — using local fallback`);
+      console.error('[Sahay] PTT transcribe:', err);
+    }
+    if (transcript.length > 1) {
+      await handleSpeech(transcript, 'neutral', true /* skipWakeGate — PTT always responds */);
+    } else {
+      setDebugMsg("Couldn't hear that clearly. Try holding the button longer.");
+      if (mountedRef.current) setStatus('listening');
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-      setStatus('thinking');
-      let transcript = '';
-      try {
-        const resp = await fetchRetry(`${API_BASE}/patient/transcribe`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ audioBase64: b64, mimeType: mime }),
-        });
-        if (resp?.ok) transcript = (await resp.json()).transcript || '';
-      } catch {}
-
-      if (transcript.length > 2) await handleSpeech(transcript, 'neutral');
-      else setStatus('listening');
-      processingRef.current = false;
-      if (!usingDGRef.current) scheduleChunk(stream);
-    };
-
-    rec.start();
-    loopRef.current = setTimeout(() => { try { rec.stop(); } catch {} }, CHUNK_MS);
-  };
-
-  // ── Main speech handler ────────────────────────────
-  const handleSpeech = async (transcript: string, sentiment: string) => {
+  /* ── Core speech handler ─────────────────────────── */
+  const handleSpeech = useCallback(async (
+    transcript: string,
+    sentiment: string,
+    skipWakeGate: boolean,
+  ) => {
+    if (!mountedRef.current) return;
     const msSince = Date.now() - speakEndRef.current;
-    if (speakingRef.current || msSince < 2000) return;
-    // Filter: only respond if transcript is clearly directed at Sahay
-    if (!isDirectedAtSahay(transcript)) return;
-    if (processingRef.current && usingDGRef.current) return;
+    if (speakingRef.current || msSince < 1_500) return;
+    if (!skipWakeGate && !isWakePhrase(transcript) && !isHighDistress(transcript)) return;
+    if (processingRef.current) return;
     processingRef.current = true;
 
     setLastHeard(transcript);
-    setLog(prev => [...prev.slice(-7), { who: 'patient', text: transcript }]);
+    setLog(prev => [...prev.slice(-9), { who: 'patient', text: transcript }]);
     setStatus('thinking');
 
-    // Auto-alert on high-distress phrases without waiting for LLM
+    // Immediate auto-alert on severe distress — no LLM wait
     if (isHighDistress(transcript) && !alertRef.current) {
       alertRef.current = true;
       setAlertSent(true);
-      uploadPanic('auto-distress');
+      void uploadDistressClip(transcript);
     }
 
-    let responseText = '';
-    let shouldAlert = false;
-
-    const patientName = profileRef.current?.patientName || 'dear';
-    const contactName = profileRef.current?.emergencyContactName || 'your caregiver';
-
-    // System prompt for the Alzheimer's companion
-    const systemPrompt = `You are Sahay, a warm, calm, and compassionate AI voice companion for ${patientName}, who is living with Alzheimer's disease.
-
-Your ONLY purpose: respond when ${patientName} is confused, scared, disoriented, asking for help, or experiencing a memory lapse.
-
-Rules you MUST follow:
-- Use VERY short, simple sentences. Maximum 2 sentences per response.
-- Speak in first person: "I am here. You are safe."
-- Always say their name gently in your first sentence.
-- NEVER argue with their reality or correct them harshly.
-- If they seem lost or in danger, reassure them AND tell them you are alerting ${contactName}.
-- If they ask who you are: "I am Sahay, your voice companion. I am always here with you."
-- If they ask their own name: Tell them warmly: "Your name is ${patientName}."
-- Respond in the same language they spoke. If Hindi/Bengali, respond in that language.
-- Do NOT give long explanations, lists, or advice. Just calm, human warmth.
-- Distress level detected: ${isHighDistress(transcript) ? 'HIGH — be extra gentle and reassuring' : 'MODERATE — calm and steady'}`;
+    let responseText  = '';
+    let shouldAlert   = false;
+    let audioBase64: string | null = null;
 
     try {
+      setDebugMsg('Asking Sahay AI…');
+
+      // Get current GPS for smart map routing (non-blocking)
+      let currentLocation: { lat: number; lng: number } | null = gps;
+      if (!currentLocation) {
+        try {
+          currentLocation = await new Promise((res) => {
+            navigator.geolocation?.getCurrentPosition(
+              p => res({ lat: p.coords.latitude, lng: p.coords.longitude }),
+              () => res(null), { timeout: 3000 }
+            );
+          }) as { lat: number; lng: number } | null;
+          if (currentLocation && mountedRef.current) setGps(currentLocation);
+        } catch { /* non-fatal */ }
+      }
+
       const res = await fetchRetry(`${API_BASE}/patient/voice`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          transcript, sentiment,
-          systemPrompt,
+          transcript,
+          sentiment,
           patientProfile: profileRef.current || {},
           sessionHistory: sessionRef.current.slice(-6),
+          currentLocation,   // GPS sent for Haversine map routing
         }),
       });
       if (res?.ok) {
         const data = await res.json();
-        const distress = data.distressScore || data.distress_score || 1;
-        const intent = data.intent || 'other';
-        const KEY = ['name_query', 'destination_query', 'lost', 'scared', 'distress', 'greeting'];
-        const lowStakes = distress <= 2 && !KEY.includes(intent);
-        if (intent === 'ignore' && lowStakes) {
-          setStatus('listening');
+        const distress = data.distressScore ?? data.distress_score ?? 1;
+        const intent   = data.intent || 'other';
+        audioBase64    = data.audioBase64 ?? null;
+        setDebugMsg(`AI: intent=${intent} distress=${distress}${audioBase64 ? ' 🔊Polly' : ' 🔊TTS'}`);
+        // In skipWakeGate (PTT) mode — never suppress, always speak
+        if (!skipWakeGate && intent === 'ignore' && distress <= 2) {
+          setDebugMsg('Background noise — no response needed');
+          if (mountedRef.current) setStatus('listening');
           processingRef.current = false;
           return;
         }
         responseText = data.response || '';
-        shouldAlert = data.shouldAlertCaregiver && distress >= 7;
-        const needMap = intent === 'destination_query' || intent === 'lost'
-          || transcript.toLowerCase().includes('route')
-          || transcript.toLowerCase().includes('show me');
-        setShowMap(needMap);
-        if (needMap && navigator.geolocation) {
-          navigator.geolocation.getCurrentPosition(p => setGps({ lat: p.coords.latitude, lng: p.coords.longitude }), () => {}, { enableHighAccuracy: true });
-        } else if (!needMap) setShowMap(false);
+        shouldAlert  = !!data.shouldAlertCaregiver && distress >= 7;
+
+        // Smart map routing — use Lambda's resolved destination
+        const mapRoute   = data.mapRoute;
+        const clientIntent = detectIntentClient(transcript);
+        const needMap = intent === 'destination_query' || intent === 'lost' ||
+          clientIntent.needMap || clientIntent.isLost || clientIntent.isLocation;
+
+        if (mountedRef.current && needMap) {
+          setShowMap(true);
+          // Use GPS from mapRoute mapsUrl or fall back to raw GPS
+          if (mapRoute?.mapsUrl) {
+            setMapDirectionsUrl(mapRoute.mapsUrl);
+            setMapDestLabel(mapRoute.label || '');
+          } else if (currentLocation) {
+            setGps(currentLocation);
+          }
+          if (mapRoute?.label) {
+            setDebugMsg(`Map: routing to ${mapRoute.label} (${mapRoute.reason})`);
+          }
+        }
         sessionRef.current.push({ role: 'user', content: transcript });
         if (data.assistantMessage) sessionRef.current.push(data.assistantMessage);
+      } else {
+        setDebugMsg(`API HTTP ${res?.status} — using offline fallback`);
       }
-    } catch {}
+    } catch (err) {
+      setDebugMsg(`API error — using offline fallback`);
+      console.error('[Sahay] voice API:', err);
+    }
 
     if (!responseText) {
+      setDebugMsg('Using offline fallback');
       const fb = localFallback(transcript, profileRef.current);
       responseText = fb.text;
-      shouldAlert = fb.alert;
-      if ((fb as any).map) {
+      shouldAlert  = !!fb.alert;
+      const clientIntent = detectIntentClient(transcript);
+      const fbNeedMap = !!(fb as { map?: boolean }).map || clientIntent.needMap || clientIntent.isLost || clientIntent.isLocation;
+      if (fbNeedMap && mountedRef.current) {
         setShowMap(true);
-        if (navigator.geolocation)
-          navigator.geolocation.getCurrentPosition(p => setGps({ lat: p.coords.latitude, lng: p.coords.longitude }), () => {}, { enableHighAccuracy: true });
+        navigator.geolocation?.getCurrentPosition(
+          p => setGps({ lat: p.coords.latitude, lng: p.coords.longitude }),
+          () => {}, { enableHighAccuracy: true, timeout: 8000 },
+        );
       }
     }
 
-    setLog(prev => [...prev.slice(-7), { who: 'sahay', text: responseText }]);
+    if (mountedRef.current) setLog(prev => [...prev.slice(-9), { who: 'sahay', text: responseText }]);
     if (shouldAlert && !alertRef.current) {
-      alertRef.current = true;
-      setAlertSent(true);
-      uploadPanic(transcript);
+      alertRef.current = true; setAlertSent(true);
+      void uploadDistressClip(transcript);
     }
-    await speak(responseText);
-    setStatus('listening');
+
+    setDebugMsg(`Saying: "${responseText.slice(0, 50)}…"`);
+    await speak(responseText, audioBase64);
+    setDebugMsg('Listening again');
+    if (mountedRef.current) setStatus('listening');
     processingRef.current = false;
-  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // ── Speak ──────────────────────────────────────────
-  const speak = (text: string) => new Promise<void>(resolve => {
-    if (!window.speechSynthesis) { resolve(); return; }
+  /* ── TTS — Polly mp3 preferred, browser TTS fallback ─── */
+  const speak = useCallback((text: string, audioBase64?: string | null): Promise<void> => {
+    return new Promise(resolve => {
+      if (!text.trim()) { resolve(); return; }
+      speakingRef.current = true;
+      if (mountedRef.current) { setSpeaking(true); setLastSpoken(text); setStatus('speaking'); }
+
+      const done = () => {
+        speakingRef.current = false;
+        speakEndRef.current = Date.now();
+        if (mountedRef.current) setSpeaking(false);
+        resolve();
+      };
+
+      // ── Option A: Play Polly mp3 audio from Lambda ──────────────
+      if (audioBase64) {
+        try {
+          const binary = atob(audioBase64);
+          const bytes  = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const blob   = new Blob([bytes], { type: 'audio/mpeg' });
+          const url    = URL.createObjectURL(blob);
+          const audio  = new window.Audio(url);
+          audio.onended = () => { URL.revokeObjectURL(url); done(); };
+          audio.onerror = () => { URL.revokeObjectURL(url); browserTTS(text, done); };
+          audio.play().catch(() => browserTTS(text, done));
+          setTimeout(done, 30_000);
+          return;
+        } catch {
+          // fall through to browser TTS
+        }
+      }
+
+      // ── Option B: Browser SpeechSynthesis (fallback) ────────────
+      browserTTS(text, done);
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const browserTTS = (text: string, done: () => void) => {
+    if (!window.speechSynthesis) { done(); return; }
     window.speechSynthesis.cancel();
-    speakingRef.current = true;
-    setSpeaking(true);
-    setLastSpoken(text);
-    setStatus('speaking');
     const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = 'en-IN';
-    utter.rate = 0.82;
-    utter.pitch = 1.05;
+    utter.lang = 'en-IN'; utter.rate = 0.82; utter.pitch = 1.05;
     const voices = window.speechSynthesis.getVoices();
-    const v = voices.find(v => v.name.includes('Google') && v.lang.startsWith('en'))
-      || voices.find(v => v.lang.startsWith('en-IN'))
-      || voices.find(v => v.lang.startsWith('en'));
-    if (v) utter.voice = v;
-    const done = () => {
-      speakingRef.current = false;
-      speakEndRef.current = Date.now();
-      setSpeaking(false);
-      resolve();
-    };
-    utter.onend = done;
-    utter.onerror = done;
+    const voice = voices.find(v => v.name.includes('Google') && v.lang.startsWith('en'))
+               ?? voices.find(v => v.lang.startsWith('en-IN'))
+               ?? voices.find(v => v.lang.startsWith('en'));
+    if (voice) utter.voice = voice;
+    let alive: ReturnType<typeof setInterval>;
+    const finish = () => { clearInterval(alive); done(); };
+    utter.onend = finish; utter.onerror = finish;
+    alive = setInterval(() => { if (window.speechSynthesis.paused) window.speechSynthesis.resume(); }, 4_000);
     window.speechSynthesis.speak(utter);
-  });
-
-  // ── Panic upload ────────────────────────────────────
-  const uploadPanic = async (phrase: string) => {
-    if (!bufferRef.current.length) return;
-    const blob = new Blob(bufferRef.current, { type: 'audio/webm' });
-    const r = new FileReader();
-    r.onloadend = async () => {
-      try {
-        await fetch(`${API_BASE}/distress/audio`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            patientId: profileRef.current?.patientName || 'unknown',
-            audioBase64: (r.result as string).split(',')[1],
-            detectedPhrase: phrase,
-            patientProfile: {
-              name: profileRef.current?.patientName,
-              emergencyContactName: profileRef.current?.emergencyContactName,
-              emergencyContactPhone: profileRef.current?.emergencyContactPhone,
-            },
-          }),
-        });
-      } catch {}
-    };
-    r.readAsDataURL(blob);
+    setTimeout(finish, 30_000);
   };
 
-  const handlePanic = async () => {
+
+  /* ── Panic button ────────────────────────────────── */
+  const handlePanic = useCallback(async () => {
     const p = profileRef.current || {};
     const msg = `${p.patientName || 'Dear'}, you are safe. I am alerting ${p.emergencyContactName || 'your caregiver'} right now. Please stay where you are.`;
-    if (!alertRef.current) { alertRef.current = true; setAlertSent(true); uploadPanic('manual'); }
+    if (!alertRef.current) { alertRef.current = true; setAlertSent(true); void uploadDistressClip('manual'); }
     await speak(msg);
-  };
+  }, [speak]);
 
-  /* ── Render ──────────────────────────────────────── */
+  /* ── Upload distress clip (20s buffer only) ────────── */
+  const uploadDistressClip = useCallback(async (phrase: string) => {
+    const now    = Date.now();
+    const cutoff = now - BUFFER_SECS * 1_000;
+    const recent = bufferRef.current.filter((_, i) => (bufferTsRef.current[i] ?? 0) >= cutoff);
+    if (!recent.length) return;
+    const blob = new Blob(recent, { type: 'audio/webm' });
+    const b64  = await blobToBase64(blob).catch(() => '');
+    if (!b64) return;
+    try {
+      await fetch(`${API_BASE}/distress/audio`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          patientId: profileRef.current?.patientName || 'unknown',
+          audioBase64: b64,
+          detectedPhrase: phrase,
+          bufferDurationSecs: BUFFER_SECS,
+          patientProfile: {
+            name: profileRef.current?.patientName,
+            emergencyContactName: profileRef.current?.emergencyContactName,
+            emergencyContactPhone: profileRef.current?.emergencyContactPhone,
+          },
+        }),
+      });
+    } catch { /* non-critical */ }
+  }, []);
+
+  /* ── Helpers ─────────────────────────────────────── */
+  function blobToBase64(blob: Blob): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onloadend = () => resolve((r.result as string).split(',')[1] ?? '');
+      r.onerror = reject;
+      r.readAsDataURL(blob);
+    });
+  }
+
+  /* ── Derived display ─────────────────────────────── */
   const name = profile?.patientName || '—';
 
-  const orbGradient =
-    alertSent ? 'linear-gradient(135deg, #f87171, #ef4444)'
-    : speaking ? 'linear-gradient(135deg, #f59e0b, #d97706)'
-    : 'linear-gradient(135deg, #7c6ffa, #4ade80, #38bdf8)';
+  const STATUS_LABEL: Record<StatusType, string> = {
+    idle: 'Tap mic to speak', listening: 'Listening…',
+    recording: '● Recording', thinking: 'Thinking…',
+    speaking: 'Speaking', error: 'Tap orb to retry',
+  };
+  const STATUS_COLOR: Record<StatusType, string> = {
+    idle: 'rgba(255,255,255,0.28)', listening: '#4ade80',
+    recording: '#f87171', thinking: '#818cf8',
+    speaking: '#f59e0b', error: '#f87171',
+  };
+  const orbGrad = alertSent
+    ? 'radial-gradient(circle at 38% 38%, #fca5a5, #dc2626)'
+    : speaking ? 'radial-gradient(circle at 38% 38%, #fde68a, #f59e0b, #d97706)'
+    : status === 'thinking' ? 'radial-gradient(circle at 38% 38%, #c4b5fd, #818cf8, #6366f1)'
+    : pttActive ? 'radial-gradient(circle at 38% 38%, #fca5a5, #ef4444)'
+    : 'radial-gradient(circle at 38% 38%, #6ee7b7, #06b6d4, #818cf8)';
 
+  const orbAnim = alertSent || pttActive ? 'orbAlert 0.7s ease-in-out infinite'
+    : speaking ? 'orbSpeak 1.6s ease-in-out infinite'
+    : status === 'thinking' ? 'orbThink 1.0s ease-in-out infinite'
+    : 'orbIdle 3.5s ease-in-out infinite';
 
-
-  const orbClass =
-    alertSent ? 'orb-deepgram alert'
-    : speaking ? 'orb-deepgram speaking'
-    : 'orb-deepgram';
-
-  const statusLabel =
-    status === 'listening' ? 'Listening'
-    : status === 'thinking' ? 'Thinking…'
-    : status === 'speaking' ? 'Speaking'
-    : status === 'starting' ? 'Starting…'
-    : status === 'error' ? 'Allow microphone access' : '';
-
-  const statusColor =
-    status === 'listening' ? 'rgba(124,111,250,0.8)'
-    : status === 'thinking' ? 'rgba(155,143,252,0.9)'
-    : status === 'speaking' ? '#f59e0b'
-    : status === 'error' ? '#f87171'
-    : 'rgba(255,255,255,0.2)';
-
-  const statusDot =
-    status === 'listening' ? '#4ade80'
-    : status === 'thinking' ? '#7c6ffa'
-    : status === 'speaking' ? '#f59e0b'
-    : status === 'error' ? '#f87171'
-    : 'rgba(255,255,255,0.2)';
+  const dgColor = { off:'rgba(255,255,255,0.25)', connecting:'#fbbf24', live:'#4ade80', fallback:'#818cf8' }[dgStatus];
+  const dgLabel = { off:'Off', connecting:'Connecting…', live:'Deepgram Live', fallback:'Groq Whisper' }[dgStatus];
 
   return (
-    <div
-      className="font-ui"
-      style={{
-        minHeight: '100vh', width: '100%',
-        background: 'radial-gradient(ellipse at 50% 30%, var(--c-accent-dim) 0%, var(--c-bg) 60%)',
-        display: 'flex', flexDirection: 'column',
-        overflow: 'hidden',
-      }}
-    >
-      {/* ── Top bar ─────────────────────────────── */}
-      <div style={{
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        padding: '14px 20px', flexShrink: 0,
-        borderBottom: '1px solid var(--c-border)',
-      }}>
-        <span style={{ fontSize: 11, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--c-text-4)', fontFamily: 'Manrope', fontWeight: 700 }}>
-          SAHAY
+    <div style={{
+      minHeight: '100dvh', width: '100%',
+      background: alertSent
+        ? 'radial-gradient(ellipse at 50% 20%, rgba(239,68,68,0.18) 0%, #08080f 55%)'
+        : pttActive ? 'radial-gradient(ellipse at 50% 25%, rgba(239,68,68,0.10) 0%, #08080f 55%)'
+        : 'radial-gradient(ellipse at 50% 25%, rgba(99,102,241,0.10) 0%, #08080f 55%)',
+      display: 'flex', flexDirection: 'column',
+      fontFamily: "'Manrope','Noto Sans Devanagari',system-ui,sans-serif",
+      color: '#fff', overflow: 'hidden', transition: 'background 1s',
+    }}>
+
+      {/* ── Top bar ─────────────────────────────────── */}
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px 18px', flexShrink:0, borderBottom:'1px solid rgba(255,255,255,0.06)' }}>
+        <span style={{ fontSize:11, letterSpacing:'0.18em', textTransform:'uppercase', color:'rgba(255,255,255,0.28)', fontWeight:700 }}>SAHAY · सहाय</span>
+        <span style={{ display:'inline-flex', alignItems:'center', gap:5, fontSize:9, letterSpacing:'0.08em', textTransform:'uppercase', background:`${dgColor}14`, border:`1px solid ${dgColor}44`, color:dgColor, padding:'3px 9px', borderRadius:9999, fontWeight:700 }}>
+          <span style={{ width:5, height:5, borderRadius:'50%', background:dgColor, display:'inline-block', animation:'blinkDot 1.4s step-end infinite' }} />
+          {dgLabel}
         </span>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span style={{
-            display: 'inline-flex', alignItems: 'center', gap: 5,
-            fontSize: 9, letterSpacing: '0.08em', textTransform: 'uppercase',
-            background: DEEPGRAM_KEY ? 'rgba(74,222,128,0.1)' : 'rgba(124,111,250,0.1)',
-            border: `1px solid ${DEEPGRAM_KEY ? 'rgba(74,222,128,0.25)' : 'rgba(124,111,250,0.25)'}`,
-            color: DEEPGRAM_KEY ? 'rgba(74,222,128,0.9)' : 'rgba(155,143,252,0.9)',
-            padding: '4px 10px', borderRadius: 9999, fontWeight: 700,
-          }}>
-            <span style={{ width: 5, height: 5, borderRadius: '50%', background: DEEPGRAM_KEY ? '#4ade80' : '#7c6ffa', animation: 'blinkDot 1.4s step-end infinite', display: 'inline-block' }} />
-            {DEEPGRAM_KEY ? 'Deepgram Live' : 'Groq Whisper'}
-          </span>
-        </div>
       </div>
 
-      {/* ── Center ──────────────────────────────── */}
-      <div style={{
-        flex: 1, display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center',
-        padding: '20px', gap: 20, overflowY: 'auto',
-      }}>
+      {/* ── Scrollable body ──────────────────────────── */}
+      <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'flex-start', padding:'18px 18px 0', gap:13, overflowY:'auto' }}>
 
-        {/* Date */}
-        <div style={{ fontSize: 11, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.2)' }}>
-          {time.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })}
+        <div style={{ fontSize:10, letterSpacing:'0.16em', textTransform:'uppercase', color:'rgba(255,255,255,0.18)' }}>
+          {time.toLocaleDateString([], { weekday:'long', month:'long', day:'numeric' })}
         </div>
 
-        {/* Name */}
-        <div
-          className="font-display"
-          style={{
-            fontSize: 'clamp(3.5rem, 16vw, 9rem)',
-            fontWeight: 400,
-            letterSpacing: '-2px',
-            lineHeight: 0.95,
-            color: 'var(--c-text-1)',
-            textAlign: 'center',
-          }}
-        >
+        <div style={{ fontFamily:"'Fraunces',Georgia,serif", fontSize:'clamp(2.8rem,13vw,7rem)', fontWeight:400, letterSpacing:'-1.5px', lineHeight:0.95, color:'#fff', textAlign:'center' }}>
           {name}
         </div>
 
-        {/* Clock */}
-        <div
-          className="font-display"
-          style={{ fontSize: 'clamp(1.4rem, 4vw, 2.2rem)', fontWeight: 300, color: 'var(--c-text-4)', letterSpacing: '0.05em' }}
-        >
-          {time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        <div style={{ fontFamily:"'Fraunces',Georgia,serif", fontSize:'clamp(1.1rem,3.5vw,1.8rem)', fontWeight:300, color:'rgba(255,255,255,0.32)', letterSpacing:'0.07em' }}>
+          {time.toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' })}
         </div>
 
-
-        {/* Orb — Deepgram Voice Agent Design */}
-        <div style={{ position: 'relative', width: 140, height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {/* Orb */}
+        <div style={{ position:'relative', width:140, height:140, flexShrink:0 }}>
+          <div style={{ position:'absolute', inset:-14, borderRadius:'50%', background:orbGrad, filter:'blur(30px)', opacity: pttActive ? 0.7 : alertSent ? 0.65 : speaking ? 0.5 : 0.22, animation:orbAnim, transition:'opacity 0.5s,background 0.6s' }} />
           <div
-            className={orbClass}
-            style={{
-              width: '100%', height: '100%',
-              background: `linear-gradient(var(--c-surface), var(--c-surface)) padding-box, ${orbGradient} border-box`,
-              border: '3px solid transparent',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-            }}
-          />
+            onClick={status === 'error' ? () => initMic() : undefined}
+            style={{ position:'absolute', inset:0, borderRadius:'50%', background:orbGrad, boxShadow:'0 0 0 3px rgba(255,255,255,0.07),0 8px 32px rgba(0,0,0,0.4)', animation:orbAnim, cursor: status === 'error' ? 'pointer' : 'default', display:'flex', alignItems:'center', justifyContent:'center', transition:'background 0.6s' }}
+          >
+            {status === 'error' && <span style={{ fontSize:26 }}>🎤</span>}
+            {pttActive && <span style={{ fontSize:22 }}>🔴</span>}
+          </div>
         </div>
 
-        {/* Status badge */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', background: statusDot, display: 'inline-block', animation: 'blinkDot 1.4s step-end infinite' }} />
-          <span style={{ fontSize: 11, letterSpacing: '0.12em', textTransform: 'uppercase', color: statusColor, fontWeight: 700 }}>{statusLabel}</span>
+        {/* Status */}
+        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+          <span style={{ width:7, height:7, borderRadius:'50%', background:STATUS_COLOR[status], display:'inline-block', animation:'blinkDot 1.4s step-end infinite', flexShrink:0 }} />
+          <span style={{ fontSize:11, letterSpacing:'0.12em', textTransform:'uppercase', color:STATUS_COLOR[status], fontWeight:700 }}>{STATUS_LABEL[status]}</span>
         </div>
 
-        {/* Last heard */}
-        {lastHeard && status !== 'listening' && (
-          <div style={{ fontSize: 12, color: 'var(--c-text-3)', fontStyle: 'italic', maxWidth: 340, textAlign: 'center' }}>
-            "{lastHeard}"
+        {/* Debug line */}
+        {debugMsg && (
+          <div style={{ fontSize:10, color:'rgba(255,255,255,0.22)', fontFamily:'monospace', maxWidth:380, textAlign:'center', padding:'2px 8px', background:'rgba(255,255,255,0.03)', borderRadius:5, border:'1px solid rgba(255,255,255,0.06)' }}>
+            {debugMsg}
           </div>
         )}
 
-        {/* Sahay reply bubble */}
-        {speaking && lastSpoken && (
-          <div
-            className="font-display"
-            style={{
-              fontSize: 'clamp(1rem, 2vw, 1.25rem)',
-              fontStyle: 'italic',
-              color: 'var(--c-text-2)',
-              textAlign: 'center',
-              maxWidth: 400,
-              lineHeight: 1.55,
-              padding: '16px 20px',
-              border: '1px solid var(--c-border)',
-              background: 'var(--c-surface-2)',
-            }}
-          >
+        {/* Last heard */}
+        {lastHeard && !pttActive && (
+          <div style={{ fontSize:13, color:'rgba(255,255,255,0.4)', fontStyle:'italic', maxWidth:360, textAlign:'center', lineHeight:1.5 }}>"{lastHeard}"</div>
+        )}
+
+        {/* Reply bubble */}
+        {lastSpoken && (
+          <div style={{ fontFamily:"'Fraunces',Georgia,serif", fontSize:'clamp(0.95rem,2vw,1.15rem)', fontStyle:'italic', color:'rgba(255,255,255,0.88)', textAlign:'center', maxWidth:400, lineHeight:1.65, padding:'14px 18px', border:'1px solid rgba(255,255,255,0.09)', background:'rgba(255,255,255,0.04)', borderRadius:14, backdropFilter:'blur(8px)' }}>
             "{lastSpoken}"
           </div>
         )}
 
         {/* Alert badge */}
         {alertSent && (
-          <div style={{
-            fontSize: 12, letterSpacing: '0.06em',
-            color: 'rgba(74,222,128,0.9)',
-            border: '1px solid rgba(74,222,128,0.3)',
-            padding: '6px 14px',
-          }}>
+          <div style={{ fontSize:12, letterSpacing:'0.06em', fontWeight:600, color:'rgba(74,222,128,0.9)', border:'1px solid rgba(74,222,128,0.28)', background:'rgba(74,222,128,0.06)', padding:'7px 16px', borderRadius:8 }}>
             ✓ {profile?.emergencyContactName || 'Caregiver'} alerted — help is on the way
           </div>
         )}
 
-        {/* Map */}
-        {showMap && profile?.homeAddress && (
-          <div style={{
-            width: '100%', maxWidth: 400,
-            border: '1px solid rgba(255,255,255,0.08)',
-            background: 'rgba(255,255,255,0.025)',
-            padding: 16,
-          }}>
-            <div style={{ fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(74,222,128,0.7)', marginBottom: 10 }}>
-              ◈ Route to safe destination
-            </div>
-            <iframe
-              width="100%" height="150" frameBorder="0"
-              style={{ border: 0, display: 'block', marginBottom: 10, opacity: 0.85 }}
-              src={`https://maps.google.com/maps?q=${encodeURIComponent(profile.homeAddress)}&output=embed`}
-              allowFullScreen
-            />
-            <a
-              href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(profile.homeAddress)}${gps ? `&origin=${gps.lat},${gps.lng}` : ''}`}
-              target="_blank" rel="noreferrer"
-              style={{
-                display: 'block', textAlign: 'center', padding: '10px',
-                background: 'rgba(74,222,128,0.08)', border: '1px solid rgba(74,222,128,0.2)',
-                color: 'rgba(74,222,128,0.9)', fontSize: 13, fontWeight: 600,
-                letterSpacing: '0.04em', textDecoration: 'none',
-                fontFamily: 'Manrope, sans-serif',
-              }}
-            >
-              ▶ Open directions
-            </a>
-          </div>
-        )}
+        {/* Map — smart routing */}
+        {showMap && (() => {
+          const destAddr = profile?.scheduledDestination || profile?.homeAddress || null;
+          const destLabel = mapDestLabel || (profile?.scheduledDestination ? 'Scheduled Destination' : 'Home');
+          // Build embed src: directions embed if we have GPS, else location embed
+          const embedSrc = mapDirectionsUrl
+            ? (GOOGLE_MAPS_KEY
+              ? mapDirectionsUrl
+                  .replace('https://www.google.com/maps/dir/?api=1&', `https://www.google.com/maps/embed/v1/directions?key=${GOOGLE_MAPS_KEY}&`)
+                  .replace('travelmode=walking', 'mode=walking')
+              : null) // No key → skip iframe embed, show open-in-app link only
+            : gps
+              ? `https://maps.google.com/maps?q=${gps.lat},${gps.lng}&z=16&output=embed`
+              : destAddr
+                ? `https://maps.google.com/maps?q=${encodeURIComponent(destAddr)}&output=embed`
+                : null;
 
-        {/* Hint chips — what the patient can say */}
-        <div style={{ textAlign: 'center', maxWidth: 400, display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'center' }}>
-          {['"What is my name?"', '"Show me the route"', '"I am lost"', '"I need help"'].map(h => (
-            <span
-              key={h}
-              style={{
-                display: 'inline-block',
-                fontSize: 11, color: 'var(--c-text-3)',
-                border: '1px solid var(--c-border)',
-                padding: '4px 10px', borderRadius: 9999,
-                letterSpacing: '0.03em',
-                background: 'var(--c-interactive)',
-              }}
-            >
-              {h}
-            </span>
+          const directionsHref = mapDirectionsUrl || (destAddr
+            ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destAddr)}${gps ? `&origin=${gps.lat},${gps.lng}` : ''}&travelmode=walking`
+            : gps ? `https://www.google.com/maps?q=${gps.lat},${gps.lng}` : '#');
+
+          return (
+            <div style={{ width:'100%', maxWidth:380, border:'1px solid rgba(255,255,255,0.07)', background:'rgba(255,255,255,0.025)', padding:14, borderRadius:12 }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+                <div style={{ fontSize:10, letterSpacing:'0.1em', textTransform:'uppercase', color:'rgba(74,222,128,0.7)', fontWeight:700 }}>
+                  ◈ Route to {destLabel}
+                </div>
+                {gps && <div style={{ fontSize:10, color:'rgba(255,255,255,0.25)', fontFamily:'monospace' }}>
+                  📍 {gps.lat.toFixed(4)}, {gps.lng.toFixed(4)}
+                </div>}
+              </div>
+
+              {embedSrc ? (
+                <iframe
+                  width="100%" height="160" frameBorder="0"
+                  style={{ border:0, display:'block', marginBottom:8, opacity:0.88, borderRadius:8 }}
+                  src={embedSrc} allowFullScreen title={`Route to ${destLabel}`}
+                />
+              ) : (
+                <div style={{ fontSize:13, color:'rgba(255,255,255,0.4)', textAlign:'center', padding:'20px 0' }}>
+                  📍 Getting your location…
+                  <br /><span style={{ fontSize:11, color:'rgba(255,255,255,0.25)' }}>Allow location access in your browser</span>
+                </div>
+              )}
+
+              <a href={directionsHref} target="_blank" rel="noreferrer"
+                style={{ display:'block', textAlign:'center', padding:'9px', background:'rgba(74,222,128,0.07)', border:'1px solid rgba(74,222,128,0.18)', color:'rgba(74,222,128,0.9)', fontSize:13, fontWeight:600, letterSpacing:'0.04em', textDecoration:'none', borderRadius:8 }}>
+                ▶ Open turn-by-turn directions → {destLabel}
+              </a>
+
+              {!profile?.homeAddress && (
+                <button onClick={() => navigate('/setup')}
+                  style={{ display:'block', width:'100%', marginTop:8, textAlign:'center', padding:'7px', background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.09)', color:'rgba(255,255,255,0.4)', fontSize:11, cursor:'pointer', fontFamily:'inherit', borderRadius:6, letterSpacing:'0.05em' }}>
+                  ⚙ Set home address in Setup
+                </button>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* Hint chips */}
+        <div style={{ maxWidth:400, display:'flex', flexWrap:'wrap', gap:6, justifyContent:'center', paddingBottom:8 }}>
+          {['"What is my name?"','"Show me the route"','"I am lost"','"I need help"'].map(h => (
+            <span key={h} style={{ display:'inline-block', fontSize:11, color:'rgba(255,255,255,0.28)', border:'1px solid rgba(255,255,255,0.08)', background:'rgba(255,255,255,0.02)', padding:'4px 10px', borderRadius:9999, letterSpacing:'0.03em' }}>{h}</span>
           ))}
+          <button onClick={() => navigate('/memories/theater')} style={{ display:'inline-flex', alignItems:'center', gap:5, fontSize:11, color:'rgba(165,180,252,0.85)', border:'1px solid rgba(129,140,248,0.22)', background:'rgba(99,102,241,0.07)', padding:'4px 10px', borderRadius:9999, cursor:'pointer', fontFamily:'inherit' }}>
+            📖 My memories
+          </button>
         </div>
 
         {/* Conversation log */}
         {log.length > 0 && (
-          <div style={{ width: '100%', maxWidth: 400, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {log.slice(-5).map((entry, i) => (
-              <div
-                key={i}
-                style={{
-                  display: 'flex',
-                  justifyContent: entry.who === 'patient' ? 'flex-end' : 'flex-start',
-                }}
-              >
-                <div
-                  style={{
-                    maxWidth: '80%',
-                    padding: '9px 14px',
-                    fontSize: 13,
-                    lineHeight: 1.5,
-                    color: 'var(--c-text-2)',
-                    ...(entry.who === 'patient'
-                      ? {
-                          background: 'var(--c-accent-dim)',
-                          border: '1px solid rgba(217,98,42,0.25)',
-                          borderRadius: '12px 12px 3px 12px',
-                        }
-                      : {
-                          background: 'var(--c-surface-2)',
-                          border: '1px solid var(--c-border)',
-                          borderRadius: '12px 12px 12px 3px',
-                        }
-                    ),
-                  }}
-                >
-                  <div style={{ fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--c-text-4)', marginBottom: 4 }}>
-                    {entry.who === 'patient' ? 'You' : 'Sahay'}
-                  </div>
+          <div style={{ width:'100%', maxWidth:400, display:'flex', flexDirection:'column', gap:7, paddingBottom:4 }}>
+            {log.slice(-6).map((entry, i) => (
+              <div key={i} style={{ display:'flex', justifyContent: entry.who === 'patient' ? 'flex-end' : 'flex-start' }}>
+                <div style={{
+                  maxWidth:'82%', padding:'8px 13px', fontSize:13, lineHeight:1.5, color:'rgba(255,255,255,0.82)',
+                  ...(entry.who === 'patient'
+                    ? { background:'rgba(99,102,241,0.11)', border:'1px solid rgba(99,102,241,0.18)', borderRadius:'12px 12px 3px 12px' }
+                    : { background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.09)', borderRadius:'12px 12px 12px 3px' }),
+                }}>
+                  <div style={{ fontSize:9, letterSpacing:'0.1em', textTransform:'uppercase', color:'rgba(255,255,255,0.22)', marginBottom:3, fontWeight:700 }}>{entry.who === 'patient' ? 'You' : 'Sahay'}</div>
                   {entry.text}
                 </div>
               </div>
             ))}
           </div>
         )}
+
+        {/* No-profile nudge */}
+        {!profile && (
+          <div style={{ fontSize:12, color:'rgba(255,255,255,0.26)', textAlign:'center', maxWidth:290, lineHeight:1.6, border:'1px solid rgba(255,255,255,0.07)', background:'rgba(255,255,255,0.02)', padding:'11px 14px', borderRadius:10 }}>
+            No profile yet.{' '}
+            <button onClick={() => navigate('/setup')} style={{ background:'none', border:'none', color:'rgba(165,180,252,0.8)', cursor:'pointer', fontSize:12, textDecoration:'underline', fontFamily:'inherit' }}>Set up</button>
+            {' '}for personalised responses.
+          </div>
+        )}
       </div>
 
-      {/* ── Panic button ─────────────────────────── */}
-      <div style={{ padding: '12px 20px 32px', display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
+      {/* ── Bottom controls ──────────────────────────── */}
+      <div style={{ padding:'14px 18px 28px', display:'flex', flexDirection:'column', gap:10, flexShrink:0 }}>
+
+        {/* Push-to-talk button */}
+        <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:6 }}>
+          <button
+            id="ptt-button"
+            onPointerDown={startPTT}
+            onPointerUp={stopPTT}
+            onPointerLeave={pttActive ? stopPTT : undefined}
+            disabled={status === 'error' || speaking || status === 'thinking'}
+            style={{
+              width:80, height:80, borderRadius:'50%',
+              background: pttActive ? 'rgba(239,68,68,0.28)' : 'rgba(255,255,255,0.05)',
+              border: `2px solid ${pttActive ? 'rgba(239,68,68,0.6)' : 'rgba(255,255,255,0.14)'}`,
+              display:'flex', alignItems:'center', justifyContent:'center',
+              fontSize:28, cursor:'pointer', transition:'all 0.15s',
+              boxShadow: pttActive ? '0 0 30px rgba(239,68,68,0.38)' : 'none',
+              opacity: (status === 'thinking' || speaking) ? 0.35 : 1,
+              userSelect:'none', WebkitUserSelect:'none',
+            }}
+            aria-label="Hold to speak"
+          >
+            {pttActive ? '🔴' : '🎤'}
+          </button>
+          <span style={{ fontSize:10, letterSpacing:'0.12em', textTransform:'uppercase', color:'rgba(255,255,255,0.22)', fontWeight:600 }}>
+            {pttActive ? 'Release to send' : 'Hold to speak'}
+          </span>
+        </div>
+
+        {/* Panic / SOS */}
         <button
+          id="panic-button"
           onClick={handlePanic}
           style={{
-            width: '100%', maxWidth: 400,
-            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14,
-            padding: '18px 24px',
-            background: 'rgba(192,57,43,0.10)',
-            border: '1px solid rgba(192,57,43,0.35)',
-            color: 'var(--c-text-1)',
-            fontSize: 15, fontWeight: 600,
-            letterSpacing: '0.02em',
-            cursor: 'pointer',
-            fontFamily: 'Manrope, sans-serif',
-            borderRadius: 12,
-            transition: 'background 0.2s, border-color 0.2s',
+            width:'100%', display:'flex', alignItems:'center', justifyContent:'center', gap:12,
+            padding:'17px 20px',
+            background: alertSent ? 'rgba(220,38,38,0.20)' : 'rgba(220,38,38,0.09)',
+            border: `1px solid ${alertSent ? 'rgba(220,38,38,0.5)' : 'rgba(220,38,38,0.26)'}`,
+            color:'#fff', fontSize:15, fontWeight:700, letterSpacing:'0.02em',
+            cursor:'pointer', fontFamily:'inherit', borderRadius:14, transition:'all 0.2s',
+            boxShadow: alertSent ? '0 0 20px rgba(220,38,38,0.22)' : 'none',
           }}
-          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(192,57,43,0.20)'; }}
-          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(192,57,43,0.10)'; }}
+          onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'rgba(220,38,38,0.20)'; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = alertSent ? 'rgba(220,38,38,0.20)' : 'rgba(220,38,38,0.09)'; }}
         >
-          <span style={{ fontSize: 22 }}>🆘</span>
-          I Need Help — Call {profile?.emergencyContactName || 'Caregiver'}
+          <span style={{ fontSize:22 }}>🆘</span>
+          {alertSent ? 'Help Alerted — Stay Put' : `I Need Help — Call ${profile?.emergencyContactName || 'Caregiver'}`}
         </button>
       </div>
+
+      <style>{`
+        @keyframes orbIdle  { 0%,100%{transform:scale(1);opacity:.82} 50%{transform:scale(1.04);opacity:1} }
+        @keyframes orbSpeak { 0%,100%{transform:scale(1);opacity:.9}  50%{transform:scale(1.09);opacity:1} }
+        @keyframes orbThink { 0%,100%{transform:scale(.97);opacity:.78} 50%{transform:scale(1.03);opacity:1} }
+        @keyframes orbAlert { 0%,100%{transform:scale(1);opacity:.85} 50%{transform:scale(1.12);opacity:1} }
+        @keyframes blinkDot { 0%,100%{opacity:1} 50%{opacity:.15} }
+      `}</style>
     </div>
   );
 }
