@@ -362,19 +362,252 @@ Hosting:       AWS Amplify (CDN) + API Gateway
 
 ---
 
-## Quick Start
+## Installation Guide
+
+### Prerequisites
+
+Before you begin, make sure you have the following installed and configured:
+
+| Tool | Version | Install |
+|---|---|---|
+| Node.js | 20+ | [nodejs.org](https://nodejs.org) |
+| AWS CLI | v2 | [aws.amazon.com/cli](https://aws.amazon.com/cli) |
+| AWS CDK | latest | `npm install -g aws-cdk` |
+| Git | any | [git-scm.com](https://git-scm.com) |
+
+You also need:
+- An **AWS account** with billing enabled
+- A **Groq API key** — free at [console.groq.com](https://console.groq.com)
+- A **Deepgram API key** — free at [console.deepgram.com](https://console.deepgram.com)
+
+---
+
+### Step 1 — Clone the Repository
 
 ```bash
-# 1. Deploy infrastructure
-cd infrastructure && npm install
-cdk bootstrap aws://YOUR_ACCOUNT_ID/ap-south-1
-cdk deploy
-
-# 2. Run frontend locally
-cd frontend && cp .env.example .env.local
-# Edit .env.local with ApiUrl from CDK output
-npm install && npm run dev
+git clone https://github.com/ProthamD/AWS-Hacakthon.git
+cd AWS-Hacakthon
 ```
+
+---
+
+### Step 2 — Configure AWS CLI
+
+```bash
+aws configure
+# Enter your:
+#   AWS Access Key ID
+#   AWS Secret Access Key
+#   Default region: ap-south-1
+#   Default output format: json
+
+# Verify it works
+aws sts get-caller-identity
+```
+
+---
+
+### Step 3 — Enable Bedrock Model Access
+
+1. Go to [AWS Console → Bedrock → Model Access](https://ap-south-1.console.aws.amazon.com/bedrock/home?region=ap-south-1#/modelaccess)
+2. Click **Manage model access**
+3. Enable:
+   - `Anthropic → Claude 3 Haiku`
+   - `Amazon → Nova Lite` (for fallback)
+4. Click **Save changes** — takes ~2 minutes to activate
+
+---
+
+### Step 4 — Deploy Infrastructure (AWS CDK)
+
+```bash
+cd infrastructure
+npm install
+
+# Bootstrap CDK (only needed once per AWS account/region)
+cdk bootstrap aws://$(aws sts get-caller-identity --query Account --output text)/ap-south-1
+
+# Deploy the full stack
+cdk deploy --require-approval never
+```
+
+> This creates all 16 Lambda functions, DynamoDB tables, S3 buckets, API Gateway, SNS topic, EventBridge rules, Step Functions state machine, and Cognito user pool.
+
+Note the **CDK output values** — you'll need them in the next steps:
+```
+SahayStack.ApiUrl            = https://xxxx.execute-api.ap-south-1.amazonaws.com/prod/
+SahayStack.CognitoUserPoolId = ap-south-1_xxxxxxx
+SahayStack.CognitoClientId   = xxxxxxxxxxxxxxxxxxxxxxxx
+SahayStack.KbDocsBucketName  = sahay-kb-docs-xxxxxxxxxxxx
+SahayStack.SnsTopicArn       = arn:aws:sns:ap-south-1:xxxx:sahay-alerts
+```
+
+**Verify deployment:**
+```bash
+curl https://YOUR_API_URL/health
+# Expected: {"status":"ok"}
+```
+
+---
+
+### Step 5 — Inject API Keys into Lambdas
+
+The following Lambdas need your Groq and Deepgram keys:
+
+```bash
+# voiceCompanionHandler — patient AI + transcription
+aws lambda update-function-configuration \
+  --function-name sahay-voicecompanionhandler \
+  --environment "Variables={GROQ_API_KEY=your_groq_key,DEEPGRAM_API_KEY=your_deepgram_key}" \
+  --region ap-south-1
+
+# chatHandler — caregiver chat
+aws lambda update-function-configuration \
+  --function-name sahay-chathandler \
+  --environment "Variables={GROQ_API_KEY=your_groq_key}" \
+  --region ap-south-1
+
+# transcribeHandler — Groq Whisper STT
+aws lambda update-function-configuration \
+  --function-name sahay-transcribehandler \
+  --environment "Variables={GROQ_API_KEY=your_groq_key,DEEPGRAM_API_KEY=your_deepgram_key}" \
+  --region ap-south-1
+
+# deepgramTokenHandler — secure key proxy for frontend
+aws lambda update-function-configuration \
+  --function-name sahay-deepgramtokenhandler \
+  --environment "Variables={DEEPGRAM_API_KEY=your_deepgram_key}" \
+  --region ap-south-1
+```
+
+> **Note:** Do NOT put these keys in your `.env` frontend file — Deepgram key is fetched securely from the backend proxy at runtime.
+
+---
+
+### Step 6 — Configure Bedrock Knowledge Base (one-time)
+
+This powers the RAG-grounded personalized caregiver responses.
+
+1. Go to [AWS Console → Bedrock → Knowledge Bases](https://ap-south-1.console.aws.amazon.com/bedrock/home?region=ap-south-1#/knowledge-bases)
+2. Click **Create knowledge base**
+3. Settings:
+   - **Name:** `sahay-patient-context`
+   - **Data source:** Amazon S3
+   - **S3 URI:** `s3://YOUR_KB_DOCS_BUCKET_NAME/` (from CDK output)
+   - **Embeddings model:** Amazon Titan Embeddings G1
+4. Click **Create** — wait ~3 minutes
+5. Note the **Knowledge Base ID** (format: `XXXXXXXXXX`)
+
+6. Inject the KB ID into the relevant Lambdas:
+```bash
+aws lambda update-function-configuration \
+  --function-name sahay-careguidanceagent \
+  --environment "Variables={BEDROCK_KB_ID=your_kb_id}" \
+  --region ap-south-1
+
+aws lambda update-function-configuration \
+  --function-name sahay-chathandler \
+  --environment "Variables={GROQ_API_KEY=your_groq_key,BEDROCK_KB_ID=your_kb_id}" \
+  --region ap-south-1
+```
+
+---
+
+### Step 7 — Subscribe to SNS Alerts (optional but recommended for demo)
+
+```bash
+aws sns subscribe \
+  --topic-arn "YOUR_SNS_TOPIC_ARN" \
+  --protocol email \
+  --notification-endpoint your@email.com \
+  --region ap-south-1
+```
+
+Check your email and click **Confirm subscription**.
+
+---
+
+### Step 8 — Set Up Frontend
+
+```bash
+cd frontend
+cp .env.example .env.local
+```
+
+Edit `.env.local` with your values from CDK output:
+```env
+VITE_API_URL=https://YOUR_API_URL/prod
+VITE_COGNITO_USER_POOL_ID=ap-south-1_xxxxxxx
+VITE_COGNITO_CLIENT_ID=xxxxxxxxxxxxxxxxxxxxxxxx
+VITE_AWS_REGION=ap-south-1
+```
+
+**Run locally:**
+```bash
+npm install
+npm run dev
+# App available at http://localhost:5173
+```
+
+**Build for production:**
+```bash
+npm run build
+# Output in dist/ — deploy to Amplify or any static host
+```
+
+---
+
+### Step 9 — Deploy Frontend to AWS Amplify (optional)
+
+```bash
+# Option A: Connect GitHub repo in Amplify Console
+# AWS Console → Amplify → New App → Host web app → GitHub → select repo
+
+# Option B: Manual deploy via CLI
+cd frontend && npm run build
+zip -r dist.zip dist/
+aws amplify create-app --name sahay --region ap-south-1
+# Then upload dist.zip via console
+```
+
+Add a rewrite rule in Amplify Console for React Router to work:
+- Source: `</^[^.]+$|\.(?!(css|gif|ico|jpg|js|png|txt|svg|woff|ttf|map|json)$)([^.]+$)/>`
+- Target: `/index.html`
+- Type: `200`
+
+---
+
+### Step 10 — Verify Everything Works
+
+```bash
+# Run the full patient AI test suite against your live endpoint
+# (edit API_BASE in the script first)
+python run_patient_tests.py
+
+# Expected: 12/12 passed
+```
+
+**Manual smoke test:**
+1. Open the app → click **Patient Companion**
+2. Say **"Hello Sahay"** → should hear Aditi voice respond
+3. Say **"Where am I?"** → should see map + hear calming response
+4. Say **"I fell down"** → caregiver alert email should arrive within 2s
+
+---
+
+### Environment Variables Reference
+
+| Variable | Used by | Description |
+|---|---|---|
+| `GROQ_API_KEY` | voiceCompanionHandler, chatHandler, transcribeHandler | Groq API key for AI inference |
+| `DEEPGRAM_API_KEY` | voiceCompanionHandler, transcribeHandler, deepgramTokenHandler | Deepgram STT key |
+| `BEDROCK_KB_ID` | careGuidanceAgent, chatHandler | Bedrock Knowledge Base ID |
+| `CAREGIVER_PROFILES_TABLE` | most Lambdas | DynamoDB table name (auto-set by CDK) |
+| `CONVERSATION_LOGS_TABLE` | chatHandler | DynamoDB table name (auto-set by CDK) |
+| `DISTRESS_SCORES_TABLE` | burnoutChecker | DynamoDB table name (auto-set by CDK) |
+| `SNS_TOPIC_ARN` | escalationAgent, alertHandler | SNS topic ARN (auto-set by CDK) |
+| `AUDIO_BUCKET` | audioUploadHandler | S3 bucket name (auto-set by CDK) |
+| `FRONTEND_URL` | escalationAgent | Allowed CORS origin (auto-set by CDK) |
 
 ---
 
