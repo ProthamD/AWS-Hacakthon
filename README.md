@@ -1,5 +1,10 @@
 # Sahay · सहाय 💙
 
+<img width="1906" height="852" alt="Screenshot 2026-09-20 221026" src="https://github.com/user-attachments/assets/c09b3b7e-3535-4b45-9c5e-1b174c08ca0b" />
+<img width="1324" height="803" alt="Screenshot 2026-09-20 222226" src="https://github.com/user-attachments/assets/09662a11-a713-4045-b74b-c5202b89011b" />
+<img width="710" height="599" alt="Screenshot 2026-09-20 222711" src="https://github.com/user-attachments/assets/48b844a0-f414-4db5-96ee-0ea728847d68" />
+
+
 > **Voice-First Alzheimer''s Caregiver & Safety Companion**
 > Built for the **First Commit Hackathon 2026** · Bharat Builds Tour (WeMakeDevs × AWS) · Ship It Track
 > 🌐 **[main.sahay.amplifyapp.com](https://main.sahay.amplifyapp.com)** · 🔌 API: `https://m4fcfzmsa7.execute-api.ap-south-1.amazonaws.com/prod/`
