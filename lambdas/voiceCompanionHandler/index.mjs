@@ -108,33 +108,56 @@ export const handler = async (event) => {
     shouldAlertCaregiver = distressScore >= 7;
     intent        = parsed.intent || "other";
 
-    // ── Post-processing intent correction ───────────────────────────────────
+    // ── Post-processing intent + score correction ────────────────────────────
     // Groq's single-pass JSON generation misclassifies specific phrase patterns.
-    // We ONLY correct the intent label — never touch the AI's response text.
-    if (intent === "other" || intent === "ignore") {
-      const t = transcript.toLowerCase();
-      // Navigation / location (indirect "can you tell me" phrasing etc.)
-      const NAV = ['route','direction','location','navigate','map','get home','which way',
+    // We correct both intent label AND distress scores when needed.
+    const tLow = transcript.toLowerCase();
+
+    // Emergency override — always fires regardless of what Groq said
+    const EMERGENCY = ['fell down','cannot get up',"can't get up",'chest hurt','chest pain',
+                       'cannot breathe',"can't breathe",'i am dying','i\'m dying','call someone',
+                       'call my son','call my daughter','i need emergency'];
+    if (EMERGENCY.some(w => tLow.includes(w))) {
+      intent = "distress";
+      distressScore = 9;
+      isDistress = true;
+      shouldAlertCaregiver = true;
+    } else if (intent === "other" || intent === "ignore") {
+      // Navigation / location
+      const NAV = ['route','direction','navigate','map','get home','which way',
                    'where to go','where do i','where should i','tell me where','give me my',
                    'how do i get','show me the way','where am i going','where do i need',
-                   'where is my destination','where is my','my destination','should i go',
+                   'where is my destination','my destination','should i go',
                    'where should','where can i go'];
-      if (NAV.some(w => t.includes(w))) {
+      // Ignore — clearly talking to someone else
+      const IGNORE = ['pass the salt','pass me the','give me the','can you give','have you seen',
+                      'did you hear','let me tell','good morning everyone'];
+      if (NAV.some(w => tLow.includes(w))) {
         intent = "destination_query";
-      // Greeting ("who are you", "hello", "hi sahay")
-      } else if (['who are you','what are you','hello','hi sahay','hey sahay','are you a robot'].some(w => t.includes(w))) {
+      } else if (IGNORE.some(w => tLow.includes(w))) {
+        intent = "ignore";
+        distressScore = 1; isDistress = false; shouldAlertCaregiver = false;
+      } else if (['who are you','what are you','hello','hi sahay','hey sahay','are you a robot','are you real'].some(w => tLow.includes(w))) {
         intent = "greeting";
-      // Lost
-      } else if (['i am lost',"i'm lost",'where am i'].some(w => t.includes(w))) {
+        distressScore = 1; isDistress = false; shouldAlertCaregiver = false;
+      } else if (['i am lost',"i'm lost",'where am i'].some(w => tLow.includes(w))) {
         intent = "lost";
-      // Name
-      } else if (['my name','who am i','what am i called'].some(w => t.includes(w))) {
+      } else if (['my name','who am i','what am i called'].some(w => tLow.includes(w))) {
         intent = "name_query";
-      // Scared
-      } else if (['scared','afraid','frightened','help me','i need help'].some(w => t.includes(w))) {
+      } else if (['scared','afraid','frightened','help me','i need help'].some(w => tLow.includes(w))) {
         intent = "scared";
       }
     }
+
+    // Fix under-scored distress — Groq sometimes returns score=5 for clearly scared/lost
+    if (intent === "scared"  && distressScore < 7)  distressScore = 7;
+    if (intent === "lost"    && distressScore < 7)  distressScore = 7;
+    if (intent === "distress" && distressScore < 9) distressScore = 9;
+    if (intent === "greeting" && distressScore > 2) distressScore = 1;
+    if (intent === "ignore"   && distressScore > 1) distressScore = 1;
+    // Re-derive flags from corrected score
+    isDistress           = distressScore >= 5;
+    shouldAlertCaregiver = distressScore >= 7;
 
     // If Groq returned empty response but we identified the intent, fill in appropriate text
     if (!aiResponse && intent !== "other" && intent !== "ignore") {
@@ -159,14 +182,14 @@ export const handler = async (event) => {
     } else {
       console.error("[voiceCompanion] Fetch failed:", err);
     }
-    return fallbackResponse(transcript, patientProfile);
+    return await fallbackResponse(transcript, patientProfile);
   }
 
   // Trim spoken response — strip markdown artifacts before sending to Polly
   aiResponse = aiResponse.trim().replace(/^["']+|["']+$/g, '').slice(0, 500);
 
   if (!aiResponse) {
-    return fallbackResponse(transcript, patientProfile);
+    return await fallbackResponse(transcript, patientProfile);
   }
 
   // ── Run Polly + map resolution in PARALLEL (both are independent of each other) ──
@@ -379,34 +402,85 @@ CALIBRATION EXAMPLES (study these carefully):
 - "I need help emergency"              → intent: "distress",          distress: 10`;
 }
 
-function fallbackResponse(transcript, profile) {
+async function fallbackResponse(transcript, profile) {
   const name    = profile?.patientName || null;
   const nameStr = name ? `${name}, ` : "";
   const contact = profile?.emergencyContactName || "your caregiver";
+  const address = profile?.homeAddress || "your safe destination";
   const t       = transcript.toLowerCase();
 
-  let response, intent;
+  let response, intent, score, isDistress, shouldAlert;
 
-  if (t.includes("name") || t.includes("who am i")) {
+  // 1. Emergency — highest priority
+  const EMERGENCY = ['fell down','cannot get up',"can't get up",'chest hurt','chest pain',
+                     'cannot breathe',"can't breathe",'i am dying','call someone',
+                     'call my son','call my daughter','i need emergency'];
+  // 2. Greetings
+  const GREET = ['hello sahay','hey sahay','hi sahay','hello','who are you','what are you','are you a robot'];
+  // 3. Ignore — talking to someone else
+  const IGNORE = ['pass the salt','pass me','give me the','have you seen','did you hear','let me tell'];
+
+  if (EMERGENCY.some(p => t.includes(p))) {
+    response = `${nameStr}I am alerting ${contact} right now. Please stay where you are. Help is on the way.`;
+    intent = "distress"; score = 9; isDistress = true; shouldAlert = true;
+
+  } else if (GREET.some(p => t.includes(p))) {
+    response = name
+      ? `I am Sahay, your voice companion. I am always here to help you, ${name}.`
+      : `I am Sahay, your voice companion. I am always here to help you.`;
+    intent = "greeting"; score = 1; isDistress = false; shouldAlert = false;
+
+  } else if (IGNORE.some(p => t.includes(p))) {
+    response = ""; intent = "ignore"; score = 1; isDistress = false; shouldAlert = false;
+
+  } else if (t.includes("name") || t.includes("who am i")) {
     response = name
       ? `Your name is ${name}. You are safe and I am right here with you.`
-      : `I don't have your name right now, but you are completely safe.`;
-    intent = "name_query";
+      : `You are completely safe. I am Sahay, your companion.`;
+    intent = "name_query"; score = 3; isDistress = false; shouldAlert = false;
+
   } else if (t.includes("lost") || t.includes("where am i")) {
     response = `${nameStr}please stay exactly where you are. ${contact} is on their way to you.`;
-    intent = "lost";
-  } else if (t.includes("scared") || t.includes("afraid") || t.includes("help")) {
+    intent = "lost"; score = 7; isDistress = true; shouldAlert = true;
+
+  } else if (t.includes("scared") || t.includes("afraid") || t.includes("frightened") || t.includes("not safe")) {
     response = `${nameStr}you are safe. Take a deep breath. I am right here with you.`;
-    intent = "scared";
-  } else if (["route","location","direction","where do i","where to","navigate","map","get home"].some(w => t.includes(w))) {
-    response = `${nameStr}I am showing you the route to your safe destination right now.`;
-    intent = "destination_query";
+    intent = "scared"; score = 8; isDistress = true; shouldAlert = false;
+
+  } else if (t.includes("help")) {
+    response = `${nameStr}you are safe. I am here. Take a deep breath and tell me what you need.`;
+    intent = "scared"; score = 7; isDistress = true; shouldAlert = false;
+
+  } else if (["route","direction","where do i","where to","navigate","map","get home","which way"].some(w => t.includes(w))) {
+    response = `${nameStr}I am showing you the route to ${address} right now.`;
+    intent = "destination_query"; score = 3; isDistress = false; shouldAlert = false;
+
   } else {
     response = `${nameStr}you are safe. I am Sahay, your companion. How can I help you?`;
-    intent = "other";
+    intent = "other"; score = 2; isDistress = false; shouldAlert = false;
   }
 
-  return ok({ response, audioBase64: null, isDistress: intent === "lost" || intent === "scared",
-    distressScore: 5, shouldAlertCaregiver: false, intent,
-    assistantMessage: { role: "assistant", content: response } });
+  // Try Polly TTS even in fallback — give patient an audio response
+  let audioBase64 = null;
+  if (response) {
+    try {
+      const pollyRes = await polly.send(new SynthesizeSpeechCommand({
+        Text: response, OutputFormat: "mp3",
+        VoiceId: "Aditi", Engine: "standard", LanguageCode: "en-IN",
+      }));
+      if (pollyRes.AudioStream) {
+        const chunks = [];
+        for await (const chunk of pollyRes.AudioStream) chunks.push(chunk);
+        audioBase64 = Buffer.concat(chunks).toString("base64");
+      }
+    } catch (pollyErr) {
+      console.warn("[fallback] Polly failed:", pollyErr.message);
+    }
+  }
+
+  return ok({
+    response, audioBase64, audioMimeType: "audio/mpeg",
+    isDistress, distressScore: score, shouldAlertCaregiver: shouldAlert, intent,
+    assistantMessage: { role: "assistant", content: response },
+  });
 }
