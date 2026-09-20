@@ -71,6 +71,16 @@ export const handler = async (event) => {
     clearTimeout(groqTimeout);
 
     if (!groqRes.ok) {
+      clearTimeout(groqTimeout);
+      if (groqRes.status === 429) {
+        // Rate-limited — don't waste time parsing body, go straight to fallback
+        console.warn("[voiceCompanion] Groq 429 rate-limited — using offline fallback");
+        return fallbackResponse(transcript, patientProfile);
+      }
+      if (groqRes.status >= 500) {
+        console.error("[voiceCompanion] Groq server error:", groqRes.status);
+        return fallbackResponse(transcript, patientProfile);
+      }
       const err = await groqRes.text();
       console.error("[voiceCompanion] Groq error:", err);
       return fallbackResponse(transcript, patientProfile);

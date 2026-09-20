@@ -807,34 +807,43 @@ export default function PatientPage() {
           </div>
         </div>
 
-        {/* Status */}
-        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+        {/* Status — role=status makes screen readers announce changes */}
+        <div role="status" aria-live="polite" aria-atomic="true" style={{ display:'flex', alignItems:'center', gap:6 }}>
           <span style={{ width:7, height:7, borderRadius:'50%', background:STATUS_COLOR[status], display:'inline-block', animation:'blinkDot 1.4s step-end infinite', flexShrink:0 }} />
           <span style={{ fontSize:11, letterSpacing:'0.12em', textTransform:'uppercase', color:STATUS_COLOR[status], fontWeight:700 }}>{STATUS_LABEL[status]}</span>
         </div>
 
-        {/* Debug line */}
+        {/* Debug line — polite so it doesn't interrupt speech */}
         {debugMsg && (
-          <div style={{ fontSize:10, color:'rgba(255,255,255,0.22)', fontFamily:'monospace', maxWidth:380, textAlign:'center', padding:'2px 8px', background:'rgba(255,255,255,0.03)', borderRadius:5, border:'1px solid rgba(255,255,255,0.06)' }}>
+          <div aria-live="polite" aria-atomic="true" style={{ fontSize:10, color:'rgba(255,255,255,0.22)', fontFamily:'monospace', maxWidth:380, textAlign:'center', padding:'2px 8px', background:'rgba(255,255,255,0.03)', borderRadius:5, border:'1px solid rgba(255,255,255,0.06)' }}>
             {debugMsg}
           </div>
         )}
 
-        {/* Last heard */}
+        {/* Last heard — polite, screen reader reads what patient said */}
         {lastHeard && !pttActive && (
-          <div style={{ fontSize:13, color:'rgba(255,255,255,0.4)', fontStyle:'italic', maxWidth:360, textAlign:'center', lineHeight:1.5 }}>"{lastHeard}"</div>
+          <div aria-live="polite" aria-label={`You said: ${lastHeard}`} style={{ fontSize:13, color:'rgba(255,255,255,0.4)', fontStyle:'italic', maxWidth:360, textAlign:'center', lineHeight:1.5 }}>"{lastHeard}"</div>
         )}
 
-        {/* Reply bubble */}
+        {/* Reply bubble — assertive so screen reader announces Sahay's response immediately */}
         {lastSpoken && (
-          <div style={{ fontFamily:"'Fraunces',Georgia,serif", fontSize:'clamp(0.95rem,2vw,1.15rem)', fontStyle:'italic', color:'rgba(255,255,255,0.88)', textAlign:'center', maxWidth:400, lineHeight:1.65, padding:'14px 18px', border:'1px solid rgba(255,255,255,0.09)', background:'rgba(255,255,255,0.04)', borderRadius:14, backdropFilter:'blur(8px)' }}>
+          <div
+            role="log"
+            aria-live="assertive"
+            aria-atomic="true"
+            aria-label={`Sahay says: ${lastSpoken}`}
+            style={{ fontFamily:"'Fraunces',Georgia,serif", fontSize:'clamp(0.95rem,2vw,1.15rem)', fontStyle:'italic', color:'rgba(255,255,255,0.88)', textAlign:'center', maxWidth:400, lineHeight:1.65, padding:'14px 18px', border:'1px solid rgba(255,255,255,0.09)', background:'rgba(255,255,255,0.04)', borderRadius:14, backdropFilter:'blur(8px)' }}>
             "{lastSpoken}"
           </div>
         )}
 
-        {/* Alert badge */}
+        {/* Alert badge — assertive: caregiver alert is urgent, announce immediately */}
         {alertSent && (
-          <div style={{ fontSize:12, letterSpacing:'0.06em', fontWeight:600, color:'rgba(74,222,128,0.9)', border:'1px solid rgba(74,222,128,0.28)', background:'rgba(74,222,128,0.06)', padding:'7px 16px', borderRadius:8, textAlign:'center' }}>
+          <div
+            role="alert"
+            aria-live="assertive"
+            aria-atomic="true"
+            style={{ fontSize:12, letterSpacing:'0.06em', fontWeight:600, color:'rgba(74,222,128,0.9)', border:'1px solid rgba(74,222,128,0.28)', background:'rgba(74,222,128,0.06)', padding:'7px 16px', borderRadius:8, textAlign:'center' }}>
             {alertMsg || `✓ ${profile?.emergencyContactName || 'Caregiver'} alerted — help is on the way`}
           </div>
         )}

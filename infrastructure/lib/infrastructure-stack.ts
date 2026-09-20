@@ -497,6 +497,10 @@ exports.handler = async (event) => {
         stageName: 'prod',
         tracingEnabled: true,
         loggingLevel: apigateway.MethodLoggingLevel.INFO,
+        // Throttle: 50 burst / 20 req-per-sec sustained
+        // Enough for dozens of concurrent patients; blocks accidental spam & bots
+        throttlingBurstLimit: 50,
+        throttlingRateLimit: 20,
       },
     });
 
